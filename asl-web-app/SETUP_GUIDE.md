@@ -61,32 +61,33 @@ Frontend will run on: **http://localhost:3000**
 
 1. **Live ASL Detection**
    - Real-time hand sign recognition
-   - MediaPipe hand tracking
-   - 94.46% accuracy
-   - Confidence scoring
+   - MediaPipe 21-point hand tracking
+   - 94.46% accuracy Random Forest model
+   - Confidence scoring for predictions
+   - Auto-space insertion after 4 letters
 
 2. **Bidirectional Communication**
-   - ASL to text conversion
-   - Voice to text (speech recognition)
-   - Text-to-speech output
-   - Dual-mode interface
+   - ASL to text conversion (MediaPipe)
+   - Voice to text (Web Speech API)
+   - Text-to-speech output (pyttsx3)
+   - Switch between ASL and Voice modes
 
-3. **Word Prediction & Auto-Complete**
-   - Smart word suggestions
-   - Common phrase database
-   - Context-aware predictions
+3. **Word Prediction**
+   - Smart word suggestions from common words
+   - Predictions based on partial text input
+   - 23 common words database
 
 4. **Analytics Dashboard**
-   - Usage statistics
-   - Letter frequency charts
-   - Message type distribution
-   - Performance insights
+   - Letter frequency bar chart
+   - Message type pie chart (ASL vs Voice)
+   - Total conversation statistics
+   - Real-time data visualization
 
 5. **Conversation History**
-   - Save all interactions
+   - Save all interactions (max 500)
    - Filter by mode (ASL/Voice)
-   - Playback conversations
-   - Export options (coming soon)
+   - View conversation details
+   - Clear history option
 
 ---
 
@@ -238,14 +239,14 @@ npm install
 
 ## 🔮 Future Enhancements
 
-- [ ] Video recording & playback
-- [ ] Deep learning model (CNN/LSTM)
-- [ ] Gesture shortcuts
-- [ ] Multi-user support
-- [ ] Mobile app version
-- [ ] Cloud deployment
-- [ ] Database integration
-- [ ] User authentication
+- [ ] Sentence-level ASL recognition (beyond single letters)
+- [ ] Deep learning model (CNN/LSTM for better accuracy)
+- [ ] Database integration (PostgreSQL for persistent history)
+- [ ] User authentication and profiles
+- [ ] Export conversation history (PDF/CSV)
+- [ ] Mobile responsive design improvements
+- [ ] Real-time collaboration (multiple users)
+- [ ] Custom word dictionary additions
 
 ---
 

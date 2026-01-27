@@ -1,33 +1,20 @@
-# Free Deployment Guide - ASL Web App
+# Deployment Guide - ASL Web App
 
-## 🌐 Deploy Your Project Live for FREE
+## 🌐 Free Deployment Strategy
 
-You can host this project online for free using GitHub Pages (frontend) and Render/Railway (backend).
+Deploy your project live using:
+- **Frontend**: GitHub Pages (React static files)
+- **Backend**: Render.com (Flask API)
+
+Both are 100% free with these limitations:
+- Render free tier sleeps after 15 min inactivity (30-60s wake time)
+- GitHub Pages for public repos only
 
 ---
 
-## Option 1: GitHub Pages + Render (Recommended) ⭐
+## Step 1: Deploy Backend to Render.com
 
-### Part A: Deploy Frontend to GitHub Pages
-
-**1. Prepare React for GitHub Pages:**
-
-```bash
-cd asl-web-app/frontend
-npm install gh-pages --save-dev
-```
-
-**2. Update `package.json`:**
-
-Add these lines to your `package.json`:
-
-```json
-{
-  "homepage": "https://khawarmeherban.github.io/asl-web-app",
-  "scripts": {
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d build",
-    "start": "react-scripts start",
+### 1. Sign Up & Connect Repository
     "build": "react-scripts build"
   }
 }
@@ -41,76 +28,152 @@ Create `.env.production` file in frontend directory:
 REACT_APP_API_URL=https://your-backend-url.onrender.com
 ```
 
-Update `LiveDetection.js` and other pages:
+### 1. Sign Up & Connect Repository
 
-```javascript
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+1. Go to [render.com](https://render.com) and sign up with GitHub
+2. Click **"New +"** → **"Web Service"**
+3. Connect your GitHub repository: `khawarmeherban/asl-alphabet-detector`
+
+### 2. Configure Service
+
+Set these values:
+- **Name**: `asl-backend` (or any name you prefer)
+- **Root Directory**: `asl-web-app/backend`
+- **Environment**: Python 3
+- **Build Command**: `pip install -r requirements.txt`
+- **Start Command**: `gunicorn --worker-class eventlet -w 1 app:app --bind 0.0.0.0:$PORT`
+- **Plan**: Free
+
+### 3. Add Environment Variable (Optional)
+
+Click "Advanced" and add:
+- **Key**: `PYTHON_VERSION`
+- **Value**: `3.11.0`
+
+### 4. Deploy
+
+1. Click **"Create Web Service"**
+2. Wait 5-10 minutes for first deployment
+3. Copy your backend URL: `https://asl-backend-xxxx.onrender.com`
+
+**Important:** Free tier sleeps after 15 min of inactivity. First request takes 30-60s to wake up.
+
+---
+
+## Step 2: Deploy Frontend to GitHub Pages
+
+### 1. Update Backend URL
+
+Edit `asl-web-app/frontend/.env.production`:
+
+```bash
+REACT_APP_API_URL=https://your-backend-url.onrender.com
 ```
 
-**4. Deploy to GitHub Pages:**
+Replace with your actual Render URL from Step 1.
 
+### 2. Deploy to GitHub Pages
+
+```bash
+cd asl-web-app/frontend
+npm install
+npm run deploy
+```
+
+This builds the React app and pushes to `gh-pages` branch.
+
+### 3. Enable GitHub Pages
+
+1. Go to: https://github.com/khawarmeherban/asl-alphabet-detector/settings/pages
+2. **Source**: Select `gh-pages` branch
+3. Click **Save**
+4. Wait 2-3 minutes
+
+### 4. Access Your Live App! 🎉
+
+**Frontend URL:** https://khawarmeherban.github.io/asl-web-app/
+
+---
+
+## Troubleshooting
+
+### Backend Issues
+
+**Problem:** Model not found error  
+**Solution:** Upload `asl_model.pkl` to Render (use environment variable for path or include in repo)
+
+**Problem:** CORS errors  
+**Solution:** Check CORS origins in `app.py` include your GitHub Pages URL
+
+**Problem:** 502 Bad Gateway  
+**Solution:** Check Render logs, ensure gunicorn command is correct
+
+### Frontend Issues
+
+**Problem:** Blank page after deployment  
+**Solution:** Verify `homepage` in `package.json` matches your GitHub Pages URL
+
+**Problem:** API calls failing  
+**Solution:** Check `.env.production` has correct backend URL and HTTPS (not HTTP)
+
+**Problem:** 404 on refresh  
+**Solution:** GitHub Pages doesn't support client-side routing by default (known limitation)
+
+---
+
+## Updating Your Deployment
+
+### Update Backend
+1. Push changes to GitHub
+2. Render auto-deploys from `main` branch
+
+### Update Frontend
 ```bash
 cd asl-web-app/frontend
 npm run deploy
 ```
 
-**5. Enable GitHub Pages:**
+---
 
-1. Go to your repo: `https://github.com/khawarmeherban/asl-alphabet-detector`
-2. Settings → Pages
-3. Source: `gh-pages` branch
-4. Save
+## Cost & Limitations
 
-**Live URL:** `https://khawarmeherban.github.io/asl-web-app/`
+### Render.com Free Tier
+- ✅ 512 MB RAM
+- ✅ Shared CPU
+- ✅ Auto-deploy from GitHub
+- ⚠️ Sleeps after 15 min inactivity
+- ⚠️ 750 hours/month (enough for personal use)
+
+### GitHub Pages
+- ✅ 100 GB bandwidth/month
+- ✅ Unlimited storage for code
+- ✅ Free for public repos
+- ⚠️ Public repos only (for free)
 
 ---
 
-### Part B: Deploy Backend to Render.com (Free Forever)
+## Alternative Hosting (If Render Fails)
 
-**1. Create `requirements.txt` for production:**
+### Railway.app
+- Similar to Render, 500 free hours/month
+- Root directory: `asl-web-app/backend`
+- Build: `pip install -r requirements.txt`
+- Start: `gunicorn --worker-class eventlet -w 1 app:app`
 
-```bash
-cd asl-web-app/backend
-```
+### Fly.io
+- 3 small VMs free
+- Requires Dockerfile (more complex setup)
 
-Update `requirements.txt`:
+---
 
-```txt
-flask>=3.0.0
-flask-cors>=4.0.0
-flask-socketio>=5.3.5
-python-socketio>=5.10.0
-numpy<2.0.0
-scikit-learn>=1.3.2
-mediapipe>=0.10.9
-opencv-python-headless>=4.9.0.80
-Pillow>=10.0.0
-gunicorn>=21.2.0
-eventlet>=0.33.3
-```
+## Next Steps
 
-**2. Create `Procfile`:**
+1. ✅ Test your live app thoroughly
+2. ✅ Share the link: `https://khawarmeherban.github.io/asl-web-app/`
+3. ✅ Monitor Render logs for errors
+4. ✅ Update README with live demo link
 
-```bash
-# In backend directory
-echo "web: gunicorn --worker-class eventlet -w 1 app:app" > Procfile
-```
-
-**3. Create `render.yaml`:**
-
-```yaml
-services:
-  - type: web
-    name: asl-backend
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --worker-class eventlet -w 1 app:app
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-```
-
-**4. Deploy to Render:**
+**Congratulations! Your ASL app is now live! 🚀**
 
 1. Go to [render.com](https://render.com) and sign up (free)
 2. Click "New +" → "Web Service"
