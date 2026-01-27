@@ -1,0 +1,13 @@
+{
+  "files": {
+    "main.css": "/asl-web-app/static/css/main.39f6c373.css",
+    "main.js": "/asl-web-app/static/js/main.9a1729a0.js",
+    "index.html": "/asl-web-app/index.html",
+    "main.39f6c373.css.map": "/asl-web-app/static/css/main.39f6c373.css.map",
+    "main.9a1729a0.js.map": "/asl-web-app/static/js/main.9a1729a0.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.39f6c373.css",
+    "static/js/main.9a1729a0.js"
+  ]
+}
