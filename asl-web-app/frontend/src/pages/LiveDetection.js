@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import axios from 'axios';
 import { Hands } from '@mediapipe/hands';
-import { Camera } from '@mediapipe/camera_utils';
+import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -17,6 +17,7 @@ function LiveDetection() {
   const [error, setError] = useState(null);
   const handsRef = useRef(null);
   const cameraRef = useRef(null);
+  const isActiveRef = useRef(false);
   const predictionBuffer = useRef([]);
   const stableCount = useRef(0);
   const lastPredictionTime = useRef(0);
@@ -46,61 +47,185 @@ function LiveDetection() {
     }
   };
 
-  const initializeCamera = () => {
-    const hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-    });
+  const initializeCamera = async () => {
+    try {
+      // Clean up existing instances first
+      if (cameraRef.current) {
+        try {
+          cameraRef.current.stop();
+        } catch (e) {
+          console.warn('Error stopping existing camera:', e);
+        }
+        cameraRef.current = null;
+      }
+      
+      if (handsRef.current) {
+        try {
+          handsRef.current.close();
+        } catch (e) {
+          console.warn('Error closing existing hands:', e);
+        }
+        handsRef.current = null;
+      }
 
-    hands.setOptions({
-      maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.7
-    });
+      // Check if camera API is available
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError('Camera API not supported. Please use a modern browser (Chrome, Firefox, or Edge).');
+        return;
+      }
 
-    hands.onResults(onResults);
-    handsRef.current = hands;
-
-    if (videoRef.current) {
-      const camera = new Camera(videoRef.current, {
-        onFrame: async () => {
-          await hands.send({ image: videoRef.current });
-        },
-        width: 1280,
-        height: 720
+      // Request camera permissions first
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'user'
+        } 
       });
-      camera.start();
-      cameraRef.current = camera;
+      
+      // Stop the test stream
+      stream.getTracks().forEach(track => track.stop());
+
+      // Set active flag
+      isActiveRef.current = true;
+
+      const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence: 0.7
+      });
+
+      hands.onResults(onResults);
+      handsRef.current = hands;
+
+      if (videoRef.current) {
+        // Wait for video element to be ready
+        await new Promise((resolve) => {
+          if (videoRef.current && videoRef.current.readyState >= 2) {
+            resolve();
+          } else if (videoRef.current) {
+            videoRef.current.addEventListener('loadedmetadata', resolve, { once: true });
+            // Fallback timeout
+            setTimeout(resolve, 2000);
+          } else {
+            resolve();
+          }
+        });
+
+        if (!isActiveRef.current) return; // Check if still active after wait
+
+        const camera = new MediaPipeCamera(videoRef.current, {
+          onFrame: async () => {
+            // Only send frames if still active
+            if (isActiveRef.current && handsRef.current && videoRef.current) {
+              try {
+                await handsRef.current.send({ image: videoRef.current });
+              } catch (e) {
+                // Ignore errors from closed instance
+                console.debug('Frame send error (likely after stop):', e);
+              }
+            }
+          },
+          width: 1280,
+          height: 720
+        });
+        
+        try {
+          await camera.start();
+          cameraRef.current = camera;
+          setError(null);
+          console.log('Camera started successfully');
+        } catch (e) {
+          console.error('Camera start error:', e);
+          throw new Error('Failed to start camera: ' + e.message);
+        }
+      }
+    } catch (error) {
+      console.error('Camera initialization error:', error);
+      let errorMessage = 'Failed to access camera. ';
+      
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        errorMessage += 'Please allow camera permissions in your browser settings.';
+      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+        errorMessage += 'No camera found. Please connect a camera and try again.';
+      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+        errorMessage += 'Camera is already in use by another application.';
+      } else {
+        errorMessage += error.message || 'Unknown error occurred.';
+      }
+      
+      setError(errorMessage);
+      setIsDetecting(false);
     }
   };
 
   const stopCamera = () => {
-    if (cameraRef.current) {
-      cameraRef.current.stop();
+    // Set flag first to stop frame processing
+    isActiveRef.current = false;
+    
+    try {
+      if (cameraRef.current) {
+        cameraRef.current.stop();
+        cameraRef.current = null;
+      }
+    } catch (error) {
+      console.warn('Error stopping camera:', error);
     }
-    if (handsRef.current) {
-      handsRef.current.close();
-    }
+    
+    // Small delay to ensure camera callbacks finish
+    setTimeout(() => {
+      try {
+        if (handsRef.current) {
+          handsRef.current.close();
+          handsRef.current = null;
+        }
+      } catch (error) {
+        console.warn('Error closing hands:', error);
+      }
+    }, 100);
   };
 
   const onResults = async (results) => {
+    // Check if still active
+    if (!isActiveRef.current) return;
+    
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !results || !results.image) return;
     
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
     
-    canvas.width = results.image.width;
-    canvas.height = results.image.height;
+    // Set canvas dimensions if they don't match
+    if (canvas.width !== results.image.width || canvas.height !== results.image.height) {
+      canvas.width = results.image.width;
+      canvas.height = results.image.height;
+    }
     
     ctx.save();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+    
+    try {
+      ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+    } catch (e) {
+      console.error('Draw image error:', e);
+      ctx.restore();
+      return;
+    }
 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
       const landmarks = results.multiHandLandmarks[0];
       
-      // Draw hand landmarks
-      requestAnimationFrame(() => drawHandLandmarks(ctx, landmarks));
+      // Draw hand landmarks immediately (no requestAnimationFrame)
+      try {
+        drawHandLandmarks(ctx, landmarks);
+      } catch (e) {
+        console.error('Draw landmarks error:', e);
+      }
       
       // Throttle predictions
       const now = Date.now();
@@ -320,8 +445,20 @@ function LiveDetection() {
 
           {/* Video Feed */}
           <div className="video-container">
-            <video ref={videoRef} className="hidden" />
-            <canvas ref={canvasRef} className="w-full rounded-lg" />
+            <video ref={videoRef} className="hidden" autoPlay playsInline />
+            <canvas ref={canvasRef} className="w-full rounded-lg bg-black" style={{ minHeight: '400px' }} />
+            
+            {!isDetecting && (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75 rounded-lg">
+                <div className="text-center text-white">
+                  <svg className="w-24 h-24 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  <p className="text-xl font-semibold">Camera Off</p>
+                  <p className="text-sm text-gray-400 mt-2">Click "Start Detection" to begin</p>
+                </div>
+              </div>
+            )}
             
             {isDetecting && (
               <div className="prediction-box">

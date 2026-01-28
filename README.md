@@ -1,54 +1,228 @@
-# ASL Alphabet Detector & Communication System
+# 🤟 ASL Alphabet Detector & Communication System
 
-A comprehensive American Sign Language (ASL) communication system using Python, OpenCV, MediaPipe, and Machine Learning. This project includes real-time ASL recognition, text-to-speech, speech-to-text, and bidirectional communication features.
+> **AI-Powered American Sign Language Recognition with Gesture Control**
 
-## Features
+A comprehensive full-stack application combining Python, React, MediaPipe, and Machine Learning for real-time ASL alphabet detection, gesture-based media control, and bidirectional sign language communication. Features a modern web interface with 94.46% ML accuracy.
 
-### Core Features
-- 🖐️ **Hand Detection**: Uses MediaPipe for accurate hand landmark detection
-- 🤖 **Machine Learning**: Random Forest classifier with 94.46% accuracy
-- 📹 **Real-Time Inference**: Live webcam feed with instant ASL letter recognition
-- 🎯 **Normalized Features**: Distance-invariant hand landmarks for robust predictions
-- 📊 **Dataset Processing**: Process image datasets to extract hand landmarks
+---
 
-### Advanced Features
-- 🔊 **Text-to-Speech**: Convert ASL signs to spoken words
-- 🎤 **Speech-to-Text**: Voice input for bidirectional communication
-- 🌐 **Multi-Language Support**: 8 languages (English, Spanish, French, German, Italian, Portuguese, Hindi, Chinese)
-- 💬 **Conversation Mode**: Full conversation history with timestamps
-- 🔄 **Bidirectional Communication**: ASL users ↔ Hearing people communication bridge
+## ✨ Features Overview
 
-## Project Structure
+### 🎥 **Real-Time ASL Detection**
+- Hand tracking with 21 landmark points (MediaPipe)
+- Instant letter recognition (A-Z, 0-9)
+- 94.46% accuracy (Random Forest classifier)
+- Live webcam inference with confidence scoring
+- Text translation with space/backspace support
+
+### 🎮 **Gesture Control System** ⭐ NEW
+- Control YouTube videos with hand gestures
+- **6 gesture types:** Open Hand, Fist, Peace Sign, Three Fingers, Thumbs Up, One Finger
+- **Actions:** Play/Pause, Volume (0-100%), Brightness (0-100%), Next Video, Mute
+- Real-time visual effects with buffer zones
+- Smart debouncing (50-200ms) to prevent accidental triggers
+
+### 🌐 **Full-Stack Web Application**
+- **Frontend:** React 18, TailwindCSS, MediaPipe Hands
+- **Backend:** Flask, Socket.IO, scikit-learn
+- **Modern UI:** Indigo-Purple-Pink gradient theme with glass morphism
+- **6 Pages:** Home, Live Detection, Gesture Control, Bidirectional, Analytics, History
+- **Responsive:** Works on desktop, tablet, mobile
+- **Accessible:** WCAG AA compliant with keyboard navigation
+
+### 🔄 **Bidirectional Communication**
+- ASL to Text/Speech conversion
+- Speech to ASL visualization
+- Text to ASL animated representations
+- Multi-language support (8 languages)
+- Conversation history (up to 500 interactions)
+
+### 📊 **Analytics & Insights**
+- Detection accuracy tracking over time
+- Letter frequency statistics
+- Usage metrics and performance graphs
+- Session duration monitoring
+- Export to text/PDF
+
+---
+
+## 🚀 Quick Start
+
+### Web Application (Recommended)
+
+**Full-stack React + Flask web app with gesture control:**
+
+```bash
+# 1. Start Backend (Terminal 1)
+cd asl-web-app/backend
+pip install -r requirements.txt
+python app.py
+# Backend: http://localhost:5000
+
+# 2. Start Frontend (Terminal 2)
+cd asl-web-app/frontend
+npm install
+npm start
+# Frontend: http://localhost:3000
+```
+
+📖 **[Complete Web App Documentation](asl-web-app/README.md)**  
+🎮 **[Gesture Control Guide](asl-web-app/FEATURES_DOCUMENTATION.md)**  
+🧪 **[Testing Checklist](asl-web-app/TESTING_CHECKLIST.md)**
+
+### Python Scripts (Standalone)
+
+**For ML training and command-line inference:**
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# 1. Process dataset (extract landmarks)
+python process_dataset.py
+
+# 2. Train model and test inference
+python inference_classifier.py
+
+# 3. Run ASL translator with TTS
+python asl_translator.py
+
+# 4. Full bidirectional communication
+python asl_bidirectional.py
+```
+
+---
+
+## 📁 Project Structure
 
 ```
-.
+asl-alphabet-detector/
+├── asl-web-app/                        # Full-stack web application ⭐
+│   ├── frontend/                       # React.js application
+│   │   ├── src/
+│   │   │   ├── pages/                 # 6 application pages
+│   │   │   │   ├── HomePage.js
+│   │   │   │   ├── LiveDetection.js   # ASL detection (482 lines)
+│   │   │   │   ├── GestureControl.js  # Gesture system (881 lines) ⭐
+│   │   │   │   ├── BidirectionalPage.js
+│   │   │   │   ├── AnalyticsPage.js
+│   │   │   │   └── HistoryPage.js
+│   │   │   ├── App.js                 # Main routing
+│   │   │   ├── index.css              # Modern theme (505 lines)
+│   │   │   └── index.js
+│   │   ├── public/
+│   │   ├── package.json
+│   │   └── build/                     # Production build
+│   │
+│   ├── backend/                       # Flask API server
+│   │   ├── app.py                    # 8 endpoints + Socket.IO
+│   │   ├── requirements.txt
+│   │   └── Procfile
+│   │
+│   ├── README.md                      # Web app overview
+│   ├── FEATURES_DOCUMENTATION.md      # Complete features guide ⭐
+│   ├── TESTING_CHECKLIST.md          # Comprehensive testing ⭐
+│   ├── SETUP_GUIDE.md                # Local development
+│   ├── DEPLOYMENT_GUIDE.md           # Production deployment
+│   └── DEPLOY_QUICK.md               # Quick deploy (10 min)
+│
 ├── data/
-│   ├── asl_dataset/          # Dataset images (download separately)
-│   ├── asl_dataset.csv       # Extracted hand landmarks (generated)
-│   └── asl_model.pkl         # Trained classifier model (generated)
-├── process_dataset.py         # Process images and extract landmarks
-├── inference_classifier.py    # Train model and real-time ASL detection
-├── asl_translator.py          # ASL to text with speech output
-├── asl_bidirectional.py       # Full bidirectional communication system
-├── test_webcam.py             # Test webcam functionality
-├── hand_landmarker.task       # MediaPipe hand detection model
-├── requirements.txt           # Python dependencies
-├── .gitignore                 # Git ignore file
-└── README.md                  # This file
+│   ├── asl_dataset/                  # Training images (87,000+)
+│   ├── asl_dataset.csv               # Extracted landmarks (generated)
+│   └── asl_model.pkl                 # Trained model (generated)
+│
+├── process_dataset.py                 # Process images → landmarks CSV
+├── inference_classifier.py            # Train model + live inference
+├── asl_translator.py                  # ASL → Text → Speech
+├── asl_bidirectional.py              # Full bidirectional system
+├── test_webcam.py                    # Test webcam functionality
+├── data_collector.py                 # Collect training data
+├── hand_landmarker.task              # MediaPipe model file
+├── requirements.txt                  # Python dependencies
+└── README.md                         # This file
 ```
 
-## Installation
+---
 
-1. **Clone this repository**:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/asl-alphabet-detector.git
-   cd asl-alphabet-detector
-   ```
+## 🛠️ Technology Stack
 
-2. **Install required packages**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Web Application
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Frontend** | React 18.3.1 | UI framework |
+| **Styling** | TailwindCSS 3.x | Modern styling |
+| **Hand Tracking** | MediaPipe Hands 0.4 | 21-point landmark detection |
+| **Video Player** | YouTube IFrame API | Gesture-controlled videos |
+| **Icons** | Lucide React | UI icons |
+| **Real-time** | Socket.IO Client | WebSocket communication |
+| **Backend** | Flask 3.0+ | API server |
+| **ML Model** | scikit-learn | Random Forest (94.46%) |
+| **Computer Vision** | MediaPipe + OpenCV | Hand detection |
+| **Deep Learning** | TensorFlow/Keras | Model training |
+
+### Python Scripts
+- **Python 3.13.11** - Runtime
+- **OpenCV** - Image processing
+- **MediaPipe** - Hand landmark detection
+- **scikit-learn** - Random Forest classifier
+- **TensorFlow** - Neural network training (optional)
+- **pyttsx3** - Text-to-speech
+- **SpeechRecognition** - Speech-to-text
+- **NumPy** - Numerical operations
+- **Pandas** - Data manipulation
+
+---
+
+## 📊 Machine Learning Details
+
+### Model Architecture
+- **Algorithm:** Random Forest Classifier
+- **Features:** 63 (21 landmarks × 3 coordinates: x, y, z)
+- **Classes:** 36 (A-Z letters + 0-9 digits)
+- **Training Data:** 87,000+ images (3,000 per character)
+- **Validation Split:** 80/20 train/test
+- **Accuracy:** **94.46%** on test set
+
+### Feature Engineering
+1. **Extract 21 hand landmarks** from each image
+2. **Normalize coordinates** (distance-invariant)
+3. **Calculate relative positions** (wrist as origin)
+4. **Scale features** using StandardScaler
+5. **Train Random Forest** (100 estimators, max depth 10)
+
+### Training Process
+```bash
+# 1. Place images in data/asl_dataset/
+# Structure: data/asl_dataset/A/, data/asl_dataset/B/, etc.
+
+# 2. Extract landmarks and create CSV
+python process_dataset.py
+# Output: data/asl_dataset.csv
+
+# 3. Train model
+python inference_classifier.py
+# Output: data/asl_model.pkl (94.46% accuracy)
+```
+
+---
+
+## 🎮 Gesture Control Mapping
+
+| Gesture | Finger Position | Action | Confidence | Debounce |
+|---------|----------------|--------|------------|----------|
+| **Open Hand** | All 5 up | Brightness Control (0-100%) | 0.85 | 50ms |
+| **One Finger** | Index up | Volume Control (0-100%) | 0.85 | 50ms |
+| **Fist** | All closed | Play/Pause Toggle | 0.80 | 150ms |
+| **Two Fingers** | Index + Middle up | Mute/Unmute | 0.85 | 150ms |
+| **Three Fingers** | Thumb + Index + Middle (Pinky down) | Next Video | 0.85 | 200ms |
+| **Thumbs Up** | Only thumb up | Reserved (future) | 0.85 | 150ms |
+
+**Buffer Zones:**
+- Top 25% of screen → Value = 100%
+- Bottom 25% of screen → Value = 0%
+- Middle 50% → Smooth linear interpolation (0-100%)
+
+---
 
    Required packages:
    - opencv-python

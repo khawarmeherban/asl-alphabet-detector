@@ -24,12 +24,17 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Load ML model
 MODEL_PATH = '../../data/asl_model.pkl'
-if os.path.exists(MODEL_PATH):
-    with open(MODEL_PATH, 'rb') as f:
-        model = pickle.load(f)
-    print("[OK] Model loaded successfully")
-else:
-    print("[WARNING] Model not found. Please train the model first.")
+model = None
+try:
+    if os.path.exists(MODEL_PATH):
+        with open(MODEL_PATH, 'rb') as f:
+            model = pickle.load(f)
+        print("[OK] Model loaded successfully")
+    else:
+        print("[WARNING] Model not found. Please train the model first.")
+except Exception as e:
+    print(f"[ERROR] Failed to load model: {e}")
+    print("[INFO] Server will run but predictions will not work until model is fixed")
     model = None
 
 # Initialize MediaPipe
@@ -38,11 +43,19 @@ HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
 
-# TTS Engine with thread lock
+# TTS Engine with thread lock - DISABLED due to Python 3.13 compatibility
 tts_lock = threading.Lock()
-tts_engine = pyttsx3.init()
-tts_engine.setProperty('rate', 150)
-tts_engine.setProperty('volume', 0.9)
+tts_engine = None
+# Commenting out due to pyttsx3 issues with Python 3.13
+# try:
+#     tts_engine = pyttsx3.init()
+#     tts_engine.setProperty('rate', 150)
+#     tts_engine.setProperty('volume', 0.9)
+#     print("[OK] Text-to-Speech initialized")
+# except Exception as e:
+#     print(f"[WARNING] TTS initialization failed: {e}")
+#     print("[INFO] Speech features will be disabled")
+print("[INFO] Text-to-Speech disabled (Python 3.13 compatibility)")
 
 # Conversation history (limit to 500 items for memory efficiency)
 conversation_history = []
@@ -148,6 +161,9 @@ def predict_words_endpoint():
 def speak():
     """Text-to-speech endpoint"""
     try:
+        if not tts_engine:
+            return jsonify({'error': 'TTS not available'}), 503
+            
         data = request.json
         text = data.get('text', '')
         
@@ -248,6 +264,56 @@ def get_statistics():
         'most_used_letters': sorted(letter_freq.items(), key=lambda x: x[1], reverse=True)[:10]
     })
 
+# Gesture Control Endpoints
+@app.route('/gesture/brightness', methods=['POST'])
+def set_brightness():
+    """Set system brightness (simulated for web)"""
+    try:
+        data = request.json
+        level = data.get('level', 50)
+        level = max(0, min(100, int(level)))
+        
+        return jsonify({
+            'status': 'success',
+            'brightness': level,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/gesture/volume', methods=['POST'])
+def set_volume():
+    """Set system volume (simulated for web)"""
+    try:
+        data = request.json
+        level = data.get('level', 50)
+        muted = data.get('muted', False)
+        level = max(0, min(100, int(level)))
+        
+        return jsonify({
+            'status': 'success',
+            'volume': level,
+            'muted': muted,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/gesture/media', methods=['POST'])
+def control_media():
+    """Control media playback (simulated for web)"""
+    try:
+        data = request.json
+        action = data.get('action', 'pause')  # play, pause, next, prev
+        
+        return jsonify({
+            'status': 'success',
+            'action': action,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # WebSocket events for real-time communication
 @socketio.on('connect')
 def handle_connect():
@@ -284,4 +350,5 @@ if __name__ == '__main__':
     print("[OK] WebSocket enabled for real-time communication")
     print("="*60 + "\n")
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    # Temporarily use app.run instead of socketio.run for debugging
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)

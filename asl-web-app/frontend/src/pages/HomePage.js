@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Camera, MessageSquare, BarChart3, Zap, Globe, Brain } from 'lucide-react';
+import { Camera, MessageSquare, BarChart3, Zap, Globe, Brain, Hand } from 'lucide-react';
 
 function HomePage() {
   const features = [
@@ -10,6 +10,13 @@ function HomePage() {
       description: 'Real-time hand sign recognition using your webcam',
       color: 'from-blue-500 to-cyan-500',
       link: '/detection'
+    },
+    {
+      icon: Hand,
+      title: 'Gesture Control',
+      description: 'Control brightness, volume, and media with hand gestures',
+      color: 'from-orange-500 to-red-500',
+      link: '/gesture-control'
     },
     {
       icon: MessageSquare,
@@ -69,12 +76,12 @@ function HomePage() {
         <h2 className="text-4xl font-bold text-white text-center mb-12">
           Powerful Features
         </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
           {features.map((feature, index) => (
-            <Link key={index} to={feature.link}>
-              <div className="card hover:scale-105 transform transition-all duration-300 cursor-pointer h-full">
+            <Link key={index} to={feature.link} aria-label={`Navigate to ${feature.title}`}>
+              <div className="card hover:scale-105 transform transition-all duration-300 cursor-pointer h-full" role="article">
                 <div className={`w-16 h-16 rounded-full bg-gradient-to-r ${feature.color} flex items-center justify-center mb-4`}>
-                  <feature.icon className="w-8 h-8 text-white" />
+                  <feature.icon className="w-8 h-8 text-white" aria-hidden="true" />
                 </div>
                 <h3 className="text-2xl font-bold mb-3 text-gray-800">{feature.title}</h3>
                 <p className="text-gray-600 text-lg">{feature.description}</p>
