@@ -1,0 +1,98 @@
+# Netlify Configuration for ASL Alphabet Detector
+#
+# This file contains the build settings and redirects for deploying
+# the React frontend to Netlify
+
+[build]
+  # Directory with the package.json containing build scripts
+  base = "asl-web-app/frontend"
+  
+  # Command to build your site
+  command = "npm run build"
+  
+  # Directory with the static build output
+  publish = "build"
+  
+  # Environment variables
+  [build.environment]
+    NODE_VERSION = "18"
+    NPM_VERSION = "9"
+    REACT_APP_API_URL = "https://your-backend-api.onrender.com"
+
+# Headers for enhanced security and performance
+[[headers]]
+  for = "/*"
+  [headers.values]
+    # Security headers
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    X-XSS-Protection = "1; mode=block"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=*, microphone=*, geolocation=()"
+    
+    # Performance headers
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/service-worker.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Content-Type = "text/css; charset=utf-8"
+
+# Redirect rules for Single Page Application (SPA)
+# This ensures all routes work correctly in React Router
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+  force = false
+
+# API proxy (optional - if you want to proxy backend requests)
+# Uncomment if you want to use /api/* paths to proxy to your backend
+# [[redirects]]
+#   from = "/api/*"
+#   to = "https://your-backend-api.onrender.com/api/:splat"
+#   status = 200
+#   force = true
+
+# Plugins for optimization
+[[plugins]]
+  package = "@netlify/plugin-lighthouse"
+  
+  [plugins.inputs.thresholds]
+    performance = 0.9
+    accessibility = 0.9
+    best-practices = 0.9
+    seo = 0.9
+
+# Build optimization
+[build.processing]
+  skip_processing = false
+
+[build.processing.css]
+  bundle = true
+  minify = true
+
+[build.processing.js]
+  bundle = true
+  minify = true
+
+[build.processing.html]
+  pretty_urls = true
+
+[build.processing.images]
+  compress = true

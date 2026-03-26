@@ -22,16 +22,23 @@ app = Flask(__name__)
 CORS(app, origins=['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'])
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# Load ML model
-MODEL_PATH = '../../data/asl_model.pkl'
+# Load ML model - Fixed path resolution
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Go up two levels to reach the project root, then into data folder
+MODEL_PATH = os.path.join(SCRIPT_DIR, '..', '..', 'data', 'asl_model.pkl')
+MODEL_PATH = os.path.normpath(MODEL_PATH)  # Normalize the path
+
+print(f"[INFO] Looking for model at: {MODEL_PATH}")
 model = None
 try:
     if os.path.exists(MODEL_PATH):
         with open(MODEL_PATH, 'rb') as f:
             model = pickle.load(f)
-        print("[OK] Model loaded successfully")
+        print("[OK] ✓ Model loaded successfully!")
     else:
-        print("[WARNING] Model not found. Please train the model first.")
+        print(f"[WARNING] Model not found at: {MODEL_PATH}")
+        print("[INFO] Please train the model first by running process_dataset.py")
 except Exception as e:
     print(f"[ERROR] Failed to load model: {e}")
     print("[INFO] Server will run but predictions will not work until model is fixed")
@@ -350,5 +357,10 @@ if __name__ == '__main__':
     print("[OK] WebSocket enabled for real-time communication")
     print("="*60 + "\n")
     
-    # Temporarily use app.run instead of socketio.run for debugging
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+    # Use socketio.run for WebSocket support
+    try:
+        socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
+    except Exception as e:
+        print(f"[ERROR] Server failed to start: {e}")
+        import traceback
+        traceback.print_exc()

@@ -13,6 +13,21 @@ function LiveDetection() {
   const [translatedText, setTranslatedText] = useState('');
   const [isDetecting, setIsDetecting] = useState(false);
   const [wordSuggestions, setWordSuggestions] = useState([]);
+  
+  // ========================================
+  // TEXT-TO-SPEECH Feature:
+  // This allows the computer to READ OUT LOUD the detected ASL text
+  // voiceEnabled: Controls if voice is ON or OFF (like a switch)
+  // ========================================
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  
+  // ========================================
+  // WORD BUILDER Feature:
+  // This stores all detected letters to build complete words and sentences
+  // builtSentence: The full sentence being created (stores all letters)
+  // ========================================
+  const [builtSentence, setBuiltSentence] = useState('');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [error, setError] = useState(null);
   const handsRef = useRef(null);
@@ -126,8 +141,7 @@ function LiveDetection() {
               try {
                 await handsRef.current.send({ image: videoRef.current });
               } catch (e) {
-                // Ignore errors from closed instance
-                console.debug('Frame send error (likely after stop):', e);
+                // Silently ignore errors from closed instances
               }
             }
           },
@@ -139,7 +153,6 @@ function LiveDetection() {
           await camera.start();
           cameraRef.current = camera;
           setError(null);
-          console.log('Camera started successfully');
         } catch (e) {
           console.error('Camera start error:', e);
           throw new Error('Failed to start camera: ' + e.message);
@@ -264,6 +277,7 @@ function LiveDetection() {
         
         // Add to text if stable
         if (stableCount.current >= 8) {
+          // Add letter to both old system and Word Builder
           setTranslatedText(prev => {
             const newText = prev + pred;
             // Auto-add space after punctuation or after 4 consecutive letters
@@ -271,6 +285,13 @@ function LiveDetection() {
             fetchWordSuggestions(shouldAddSpace ? newText + ' ' : newText);
             return shouldAddSpace ? newText + ' ' : newText;
           });
+          
+          // ========================================
+          // WORD BUILDER: Add detected letter to sentence
+          // This automatically adds each detected letter to build words
+          // ========================================
+          addLetterToSentence(pred);
+          
           stableCount.current = 0;
           predictionBuffer.current = [];
         }
@@ -362,11 +383,66 @@ function LiveDetection() {
     }
   };
 
-  const handleSpeak = async () => {
-    try {
-      await axios.post(`${API_URL}/speak`, { text: translatedText });
-    } catch (error) {
-      console.error('TTS error:', error);
+  // ========================================
+  // TEXT-TO-SPEECH Function:
+  // This function makes the browser READ the text OUT LOUD using the Web Speech API
+  // How it works:
+  // 1. Check if browser supports speech (speechSynthesis)
+  // 2. Create a "speech" object with the text to speak
+  // 3. Set voice speed (rate) - slower for students
+  // 4. Set voice volume (0 to 1)
+  // 5. Tell browser to speak the text
+  // ========================================
+  const handleSpeak = () => {
+    // Check if voiceEnabled is OFF, don't speak
+    if (!voiceEnabled) {
+      alert('Voice is turned OFF. Please enable it first.');
+      return;
+    }
+    
+    // Use the Word Builder sentence if available, otherwise use translatedText
+    const textToSpeak = builtSentence || translatedText;
+    
+    if (!textToSpeak) {
+      alert('No text to speak. Start detecting ASL signs first!');
+      return;
+    }
+    
+    // Check if browser supports Text-to-Speech
+    if ('speechSynthesis' in window) {
+      // Stop any previous speech first
+      window.speechSynthesis.cancel();
+      
+      // Create a new speech request
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      
+      // Set voice properties for clarity (good for students)
+      utterance.rate = 0.8;    // Speed: 0.8 = slower and clearer
+      utterance.pitch = 1.0;   // Pitch: 1.0 = normal voice
+      utterance.volume = 1.0;  // Volume: 1.0 = maximum
+      utterance.lang = 'en-US'; // Language: English
+      
+      // When speech starts, update status
+      utterance.onstart = () => {
+        setIsSpeaking(true);
+      };
+      
+      // When speech ends, update status
+      utterance.onend = () => {
+        setIsSpeaking(false);
+      };
+      
+      // If error occurs, show message
+      utterance.onerror = (event) => {
+        console.error('Speech error:', event);
+        setIsSpeaking(false);
+        alert('Error speaking text. Please try again.');
+      };
+      
+      // START SPEAKING!
+      window.speechSynthesis.speak(utterance);
+    } else {
+      alert('Your browser does not support Text-to-Speech. Try Chrome or Edge.');
     }
   };
 
@@ -387,6 +463,43 @@ function LiveDetection() {
     const words = translatedText.split(' ');
     words[words.length - 1] = word;
     setTranslatedText(words.join(' ') + ' ');
+  };
+  
+  // ========================================
+  // WORD BUILDER Functions:
+  // These functions help users build complete sentences from detected letters
+  // ========================================
+  
+  // ADD SPACE Function:
+  // How it works: Add a space character to the sentence (like pressing spacebar)
+  // This separates words: "HELLO" + SPACE = "HELLO "
+  const handleAddSpace = () => {
+    setBuiltSentence(prev => prev + ' ');
+  };
+  
+  // BACKSPACE Function:
+  // How it works: Remove the last character from the sentence
+  // Example: "HELLO" -> Backspace -> "HELL"
+  // Uses .slice(0, -1) which means "take all characters except the last one"
+  const handleBackspace = () => {
+    setBuiltSentence(prev => prev.slice(0, -1));
+  };
+  
+  // CLEAR TEXT Function:
+  // How it works: Delete everything and start fresh
+  // Sets builtSentence to empty string ''
+  const handleClearText = () => {
+    setBuiltSentence('');
+    setTranslatedText('');
+    setPrediction('');
+    setConfidence(0);
+  };
+  
+  // ADD DETECTED LETTER to Word Builder:
+  // This function is called when a new ASL sign is detected
+  // It adds the letter to our sentence
+  const addLetterToSentence = (letter) => {
+    setBuiltSentence(prev => prev + letter);
   };
 
   return (
@@ -428,19 +541,64 @@ function LiveDetection() {
             >
               {isDetecting ? 'Stop Detection' : 'Start Detection'}
             </button>
-            {translatedText && (
+            
+            {/* TEXT-TO-SPEECH Toggle Button */}
+            <button 
+              onClick={() => setVoiceEnabled(!voiceEnabled)}
+              className={voiceEnabled ? 'bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-semibold transition-all' : 'bg-gray-400 hover:bg-gray-500 text-white px-6 py-3 rounded-lg font-semibold transition-all'}
+              title="Toggle voice ON or OFF"
+            >
+              🔊 Voice {voiceEnabled ? 'ON' : 'OFF'}
+            </button>
+            
+            {(translatedText || builtSentence) && (
               <>
-                <button onClick={handleSpeak} className="btn-secondary">
-                  Speak Text
+                {/* Speak Button - uses Text-to-Speech */}
+                <button 
+                  onClick={handleSpeak} 
+                  className={isSpeaking ? 'bg-purple-500 text-white px-6 py-3 rounded-lg font-semibold' : 'btn-secondary'}
+                  disabled={isSpeaking}
+                >
+                  {isSpeaking ? '🔊 Speaking...' : '🎤 Speak Text'}
                 </button>
                 <button onClick={handleSaveToHistory} className="btn-secondary">
-                  Save to History
-                </button>
-                <button onClick={() => setTranslatedText('')} className="btn-secondary">
-                  Clear Text
+                  💾 Save to History
                 </button>
               </>
             )}
+          </div>
+
+          {/* WORD BUILDER Controls */}
+          <div className="card bg-blue-50">
+            <h3 className="text-xl font-semibold mb-3 flex items-center">
+              ✍️ Word Builder Controls
+              <span className="ml-3 text-sm font-normal text-gray-600">
+                (Build sentences by adding letters, spaces, and corrections)
+              </span>
+            </h3>
+            <div className="flex space-x-3">
+              <button 
+                onClick={handleAddSpace}
+                className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
+                title="Add a space between words"
+              >
+                ⎵ Add Space
+              </button>
+              <button 
+                onClick={handleBackspace}
+                className="bg-yellow-500 hover:bg-yellow-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
+                title="Delete the last character"
+              >
+                ⌫ Backspace
+              </button>
+              <button 
+                onClick={handleClearText}
+                className="bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
+                title="Clear all text and start over"
+              >
+                🗑️ Clear All
+              </button>
+            </div>
           </div>
 
           {/* Video Feed */}
@@ -462,23 +620,125 @@ function LiveDetection() {
             
             {isDetecting && (
               <div className="prediction-box">
-                <div>Prediction: {prediction || '...'}</div>
-                <div className="confidence-bar">
-                  <div 
-                    className="confidence-fill" 
-                    style={{ width: `${confidence * 100}%` }}
-                  />
+                <div className="text-2xl font-bold mb-2">Prediction: {prediction || '...'}</div>
+                
+                {/* ========================================
+                     CONFIDENCE METER:
+                     This shows HOW SURE the computer is about the detected sign
+                     - Confidence Score: A number from 0 to 100 (like a test score!)
+                     - 80-100% (Green) = Computer is very confident = HIGH accuracy
+                     - 50-79% (Yellow) = Computer is somewhat confident = MEDIUM accuracy  
+                     - 0-49% (Red) = Computer is unsure = LOW accuracy
+                     
+                     How it works:
+                     1. ML model gives a confidence number (0.0 to 1.0)
+                     2. We multiply by 100 to get percentage (0% to 100%)
+                     3. We change the color based on the percentage
+                     4. We show a progress bar that fills up based on confidence
+                     ======================================== */}
+                <div className="mb-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-semibold">
+                      Confidence Score 
+                      <span className="text-xs text-gray-500 ml-2">
+                        (How accurate is this prediction?)
+                      </span>
+                    </span>
+                    <span className="text-lg font-bold">
+                      {(confidence * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  
+                  {/* Progress bar background (gray) */}
+                  <div className="w-full h-8 bg-gray-300 rounded-full overflow-hidden border-2 border-gray-400">
+                    {/* Progress bar fill - changes color based on confidence */}
+                    <div 
+                      className="h-full transition-all duration-300 flex items-center justify-center text-white font-bold text-sm"
+                      style={{ 
+                        width: `${confidence * 100}%`,
+                        // Green if confidence >= 80%, Yellow if >= 50%, Red if < 50%
+                        backgroundColor: confidence >= 0.8 ? '#10b981' : confidence >= 0.5 ? '#fbbf24' : '#ef4444'
+                      }}
+                    >
+                      {confidence > 0.15 && `${(confidence * 100).toFixed(0)}%`}
+                    </div>
+                  </div>
+                  
+                  {/* Confidence level text */}
+                  <div className="text-center mt-1 text-sm font-semibold">
+                    {confidence >= 0.8 ? (
+                      <span className="text-green-600">✓ High Confidence - Very Accurate!</span>
+                    ) : confidence >= 0.5 ? (
+                      <span className="text-yellow-600">⚠ Medium Confidence - Fairly Accurate</span>
+                    ) : (
+                      <span className="text-red-600">✗ Low Confidence - May Not Be Accurate</span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-sm mt-1">Confidence: {(confidence * 100).toFixed(1)}%</div>
               </div>
             )}
           </div>
 
-          {/* Translated Text */}
-          <div className="card bg-gray-50">
-            <h3 className="text-xl font-semibold mb-3">Translated Text:</h3>
-            <div className="bg-white p-4 rounded-lg min-h-[100px] text-xl">
-              {translatedText || 'Start detecting to see translations...'}
+          {/* Translated Text - Enhanced Styling */}
+          <div className="card bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200 shadow-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-2xl font-bold text-purple-800 flex items-center">
+                <span className="mr-2">📄</span> Translated Text
+              </h3>
+              {translatedText && (
+                <span className="text-sm bg-purple-200 text-purple-800 px-3 py-1 rounded-full font-semibold">
+                  {translatedText.length} characters
+                </span>
+              )}
+            </div>
+            <div className="bg-white p-6 rounded-xl min-h-[120px] shadow-inner border-2 border-purple-100 relative overflow-auto max-h-[200px]">
+              {translatedText ? (
+                <p className="text-2xl font-medium leading-relaxed text-gray-800 tracking-wide break-words">
+                  {translatedText}
+                </p>
+              ) : (
+                <p className="text-xl text-gray-400 italic text-center mt-4">
+                  ✋ Start detecting to see translations appear here...
+                </p>
+              )}
+            </div>
+            {translatedText && (
+              <div className="mt-3 flex items-center justify-between text-sm text-purple-600">
+                <span className="flex items-center">
+                  <span className="mr-1">💬</span>
+                  <span className="font-medium">Auto-detected letters are stored here</span>
+                </span>
+                <span className="text-gray-500">
+                  Words: {translatedText.trim().split(/\s+/).filter(w => w.length > 0).length}
+                </span>
+              </div>
+            )}
+          </div>
+          
+          {/* ========================================
+               WORD BUILDER Display:
+               Shows the full sentence being built from detected letters
+               This is where all the letters come together to form words!
+               ======================================== */}
+          <div className="card bg-green-50 border-4 border-green-300">
+            <h3 className="text-2xl font-bold mb-3 flex items-center text-green-800">
+              📝 Word Builder - Your Complete Sentence
+              <span className="ml-3 text-sm font-normal text-gray-600">
+                (Each detected letter is added here automatically)
+              </span>
+            </h3>
+            <div className="bg-white p-6 rounded-lg min-h-[120px] text-2xl font-mono border-2 border-green-400">
+              {builtSentence || 'Start signing to build your sentence...'}
+            </div>
+            <div className="mt-3 text-sm text-gray-700 bg-white p-3 rounded-lg">
+              <strong>💡 How Word Builder Works:</strong>
+              <ul className="list-disc list-inside mt-2 space-y-1">
+                <li><strong>Detected letters</strong> are automatically added to your sentence</li>
+                <li>Use <strong>"Add Space"</strong> button to separate words</li>
+                <li>Use <strong>"Backspace"</strong> to fix mistakes (removes last letter)</li>
+                <li>Use <strong>"Clear All"</strong> to start over</li>
+                <li>Click <strong>"Speak Text"</strong> to hear your sentence read aloud!</li>
+              </ul>
             </div>
           </div>
 
@@ -501,16 +761,56 @@ function LiveDetection() {
           )}
 
           {/* Instructions */}
-          <div className="card bg-purple-50">
-            <h3 className="text-xl font-semibold mb-3">Instructions:</h3>
-            <ul className="list-disc list-inside space-y-2 text-gray-700">
-              <li>Click "Start Detection" to begin</li>
-              <li>Show ASL alphabet signs to your webcam</li>
-              <li>Hold each sign steady for accurate detection</li>
-              <li>Text will auto-complete as you sign</li>
-              <li>Use word suggestions for faster typing</li>
-              <li>Click "Speak Text" to hear your message</li>
-            </ul>
+          <div className="card bg-purple-50 border-2 border-purple-300">
+            <h3 className="text-2xl font-bold mb-4 text-purple-800">📖 How to Use - Step-by-Step Guide</h3>
+            
+            {/* Main Instructions */}
+            <div className="bg-white p-4 rounded-lg mb-4">
+              <h4 className="font-bold text-lg mb-2">🎯 Basic Steps:</h4>
+              <ol className="list-decimal list-inside space-y-2 text-gray-700">
+                <li><strong>Click "Start Detection"</strong> to turn on your webcam</li>
+                <li><strong>Show ASL alphabet signs</strong> to your webcam (one at a time)</li>
+                <li><strong>Hold each sign steady</strong> for 2-3 seconds for accurate detection</li>
+                <li><strong>Watch the Confidence Meter</strong> - Green means good detection!</li>
+                <li><strong>Letters automatically appear</strong> in the Word Builder</li>
+              </ol>
+            </div>
+            
+            {/* Text-to-Speech Instructions */}
+            <div className="bg-blue-100 p-4 rounded-lg mb-4">
+              <h4 className="font-bold text-lg mb-2">🔊 Text-to-Speech Feature:</h4>
+              <ul className="list-disc list-inside space-y-2 text-gray-700">
+                <li><strong>Turn ON Voice:</strong> Click the "Voice ON/OFF" button (it turns green when ON)</li>
+                <li><strong>Build your sentence:</strong> Sign letters to create words</li>
+                <li><strong>Click "Speak Text":</strong> The computer will read your sentence out loud!</li>
+                <li><strong>Voice Speed:</strong> Set to slow and clear - perfect for students</li>
+                <li><strong>Turn OFF anytime:</strong> Click voice button again to disable</li>
+              </ul>
+            </div>
+            
+            {/* Word Builder Instructions */}
+            <div className="bg-green-100 p-4 rounded-lg mb-4">
+              <h4 className="font-bold text-lg mb-2">✍️ Word Builder Feature:</h4>
+              <ul className="list-disc list-inside space-y-2 text-gray-700">
+                <li><strong>Auto-Build:</strong> Each detected letter is automatically added to your sentence</li>
+                <li><strong>Add Space:</strong> Click "Add Space" to separate words (like: HELLO [space] WORLD)</li>
+                <li><strong>Fix Mistakes:</strong> Click "Backspace" to delete the last letter</li>
+                <li><strong>Start Over:</strong> Click "Clear All" to erase everything and begin fresh</li>
+                <li><strong>Real-Time:</strong> See your sentence grow as you sign each letter!</li>
+              </ul>
+            </div>
+            
+            {/* Confidence Meter Instructions */}
+            <div className="bg-yellow-100 p-4 rounded-lg">
+              <h4 className="font-bold text-lg mb-2">📊 Confidence Meter Feature:</h4>
+              <ul className="list-disc list-inside space-y-2 text-gray-700">
+                <li><strong>What is it?</strong> A score (0-100%) showing how accurate the prediction is</li>
+                <li><strong>Green (80-100%):</strong> High confidence = Very accurate! ✓</li>
+                <li><strong>Yellow (50-79%):</strong> Medium confidence = Fairly accurate ⚠</li>
+                <li><strong>Red (0-49%):</strong> Low confidence = May not be accurate ✗</li>
+                <li><strong>Tip:</strong> Hold your hand steady and make clear signs for higher confidence!</li>
+              </ul>
+            </div>
           </div>
         </div>
       </div>

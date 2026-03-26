@@ -1,12 +1,41 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import HomePage from './pages/HomePage';
-import LiveDetection from './pages/LiveDetection';
-import BidirectionalPage from './pages/BidirectionalPage';
-import AnalyticsPage from './pages/AnalyticsPage';
-import HistoryPage from './pages/HistoryPage';
-import GestureControl from './pages/GestureControl';
 import { Camera, Home, MessageSquare, BarChart3, History, Hand } from 'lucide-react';
+import { ThemeProvider, ThemeToggle } from './context/ThemeContext';
+
+// Lazy load pages for better performance (code splitting)
+const HomePage = lazy(() => import('./pages/HomePage'));
+const LiveDetection = lazy(() => import('./pages/LiveDetection'));
+const BidirectionalPage = lazy(() => import('./pages/BidirectionalPage'));
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
+const HistoryPage = lazy(() => import('./pages/HistoryPage'));
+const GestureControl = lazy(() => import('./pages/GestureControl'));
+
+// Loading component with skeleton UI
+function LoadingFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-600 via-pink-500 to-red-500">
+      <div className="text-center space-y-6">
+        <div className="relative">
+          <div className="w-24 h-24 border-8 border-white border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-4xl" role="img" aria-label="hand sign">🤟</span>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-2xl font-bold text-white">Loading ASL Detector...</h2>
+          <p className="text-purple-100">Please wait while we prepare your experience</p>
+        </div>
+        {/* Skeleton content */}
+        <div className="max-w-md mx-auto space-y-3 mt-8">
+          <div className="h-4 bg-white bg-opacity-20 rounded animate-pulse"></div>
+          <div className="h-4 bg-white bg-opacity-20 rounded animate-pulse w-3/4 mx-auto"></div>
+          <div className="h-4 bg-white bg-opacity-20 rounded animate-pulse w-1/2 mx-auto"></div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Error Boundary Component
 class ErrorBoundary extends React.Component {
@@ -67,23 +96,30 @@ function Navigation() {
           </h1>
         </div>
         
-        <div className="flex space-x-1">
-          {navItems.map(({ path, icon: Icon, label }) => (
-            <Link
-              key={path}
-              to={path}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-all duration-300 focus-visible ${
-                location.pathname === path
-                  ? 'bg-white bg-opacity-20 shadow-lg'
-                  : 'hover:bg-white hover:bg-opacity-10'
-              }`}
-              aria-current={location.pathname === path ? 'page' : undefined}
-              aria-label={label}
-            >
-              <Icon size={20} aria-hidden="true" />
-              <span className="hidden md:inline">{label}</span>
-            </Link>
-          ))}
+        <div className="flex items-center space-x-4">
+          <div className="flex space-x-1">
+            {navItems.map(({ path, icon: Icon, label }) => (
+              <Link
+                key={path}
+                to={path}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-all duration-300 focus-visible ${
+                  location.pathname === path
+                    ? 'bg-white bg-opacity-20 shadow-lg'
+                    : 'hover:bg-white hover:bg-opacity-10'
+                }`}
+                aria-current={location.pathname === path ? 'page' : undefined}
+                aria-label={label}
+              >
+                <Icon size={20} aria-hidden="true" />
+                <span className="hidden md:inline">{label}</span>
+              </Link>
+            ))}
+          </div>
+          
+          {/* Theme Toggle Button */}
+          <div className="ml-2">
+            <ThemeToggle />
+          </div>
         </div>
       </div>
     </nav>
@@ -92,23 +128,27 @@ function Navigation() {
 
 function App() {
   return (
-    <ErrorBoundary>
-      <Router>
-        <div className="min-h-screen">
-          <Navigation />
-          <main className="container mx-auto p-6" role="main">
-            <Routes>
-              <Route path="/" element={<HomePage />} />
-              <Route path="/detection" element={<LiveDetection />} />
-              <Route path="/gesture-control" element={<GestureControl />} />
-              <Route path="/bidirectional" element={<BidirectionalPage />} />
-              <Route path="/analytics" element={<AnalyticsPage />} />
-              <Route path="/history" element={<HistoryPage />} />
-            </Routes>
-          </main>
-        </div>
-      </Router>
-    </ErrorBoundary>
+    <ThemeProvider>
+      <ErrorBoundary>
+        <Router>
+          <div className="min-h-screen">
+            <Navigation />
+            <main className="container mx-auto p-6" role="main">
+              <Suspense fallback={<LoadingFallback />}>
+                <Routes>
+                  <Route path="/" element={<HomePage />} />
+                  <Route path="/detection" element={<LiveDetection />} />
+                  <Route path="/gesture-control" element={<GestureControl />} />
+                  <Route path="/bidirectional" element={<BidirectionalPage />} />
+                  <Route path="/analytics" element={<AnalyticsPage />} />
+                  <Route path="/history" element={<HistoryPage />} />
+                </Routes>
+              </Suspense>
+            </main>
+          </div>
+        </Router>
+      </ErrorBoundary>
+    </ThemeProvider>
   );
 }
 

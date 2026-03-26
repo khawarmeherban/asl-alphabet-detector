@@ -417,7 +417,7 @@ function GestureControl() {
               // Control audio
               if (audioRef.current) {
                 if (newPlaying) {
-                  audioRef.current.play().catch(e => console.log('Play error:', e));
+                  audioRef.current.play().catch(() => {});
                 } else {
                   audioRef.current.pause();
                 }
@@ -432,7 +432,7 @@ function GestureControl() {
                     youtubePlayerRef.current.pauseVideo();
                   }
                 } catch (e) {
-                  console.log('YouTube control error:', e);
+                  // YouTube control error
                 }
               }
             }, 150);
@@ -465,7 +465,7 @@ function GestureControl() {
                   }, 500);
                 }
               } catch (e) {
-                console.log('YouTube next error:', e);
+                // YouTube next error
               }
             }, 200);
           }
@@ -488,7 +488,7 @@ function GestureControl() {
                   }, 500);
                 }
               } catch (e) {
-                console.log('YouTube prev error:', e);
+                // YouTube prev error
               }
             }, 200);
           }

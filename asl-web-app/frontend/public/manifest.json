@@ -1,0 +1,61 @@
+{
+  "short_name": "ASL Detector",
+  "name": "ASL Alphabet Detector & Communication System",
+  "description": "Advanced real-time American Sign Language detection with bidirectional communication",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#8b5cf6",
+  "background_color": "#1e1e1e",
+  "orientation": "portrait",
+  "scope": "/",
+  "categories": ["education", "accessibility", "utilities"],
+  "screenshots": [
+    {
+      "src": "screenshot-wide.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide"
+    },
+    {
+      "src": "screenshot-narrow.png",
+      "sizes": "750x1334",
+      "type": "image/png",
+      "form_factor": "narrow"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Live Detection",
+      "short_name": "Detect",
+      "description": "Start live ASL detection",
+      "url": "/detection",
+      "icons": [{ "src": "logo192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Gesture Control",
+      "short_name": "Gesture",
+      "description": "Control system with gestures",
+      "url": "/gesture-control",
+      "icons": [{ "src": "logo192.png", "sizes": "192x192" }]
+    }
+  ]
+}
