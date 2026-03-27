@@ -516,10 +516,4 @@ In `data_collector.py`, you can save data as pickle instead of CSV for faster lo
 - **OpenCV**: Computer vision library
 - **Scikit-learn**: Machine learning framework
 
-## License
 
-This project is open-source and available for educational purposes.
-
----
-
-Happy signing! 🤟
