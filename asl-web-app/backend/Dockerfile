@@ -1,12 +1,21 @@
 FROM python:3.10-slim
 
+# Create a non-root user (recommended by HF)
+RUN useradd -m -u 1000 user
+USER user
+ENV PATH="/home/user/.local/bin:$PATH"
+
 WORKDIR /app
 
-COPY . /app
+# Copy requirements and install dependencies
+COPY --chown=user ./requirements.txt requirements.txt
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+# Copy the rest of the code
+COPY --chown=user . /app
 
+# Expose the port required by Hugging Face Spaces
 EXPOSE 7860
 
+# Start the Flask app on port 7860
 CMD ["python", "app.py"]

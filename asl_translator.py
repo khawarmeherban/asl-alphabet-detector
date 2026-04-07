@@ -11,7 +11,6 @@ Features:
 import cv2
 import mediapipe as mp
 import numpy as np
-import pandas as pd
 import pickle
 import os
 from collections import deque, Counter

@@ -12,7 +12,6 @@ How to use:
 
 import cv2
 from mediapipe import solutions
-from mediapipe.framework.formats import landmark_pb2
 import csv
 import os
 import numpy as np

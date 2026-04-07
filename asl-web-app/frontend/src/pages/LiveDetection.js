@@ -80,6 +80,7 @@ function LiveDetection() {
         } catch (e) {
           console.warn('Error closing existing hands:', e);
         }
+        // Set to null immediately after close
         handsRef.current = null;
       }
 
@@ -139,7 +140,10 @@ function LiveDetection() {
             // Only send frames if still active
             if (isActiveRef.current && handsRef.current && videoRef.current) {
               try {
-                await handsRef.current.send({ image: videoRef.current });
+                // Only call send if handsRef.current is not null
+                if (handsRef.current) {
+                  await handsRef.current.send({ image: videoRef.current });
+                }
               } catch (e) {
                 // Silently ignore errors from closed instances
               }
@@ -195,8 +199,9 @@ function LiveDetection() {
       try {
         if (handsRef.current) {
           handsRef.current.close();
-          handsRef.current = null;
         }
+        // Set to null immediately after close
+        handsRef.current = null;
       } catch (error) {
         console.warn('Error closing hands:', error);
       }

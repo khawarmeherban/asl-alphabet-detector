@@ -15,7 +15,7 @@ import threading
 
 app = Flask(__name__)
 CORS(app, origins=['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'])
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Load ML model - Fixed path resolution
 # Get the directory where this script is located
