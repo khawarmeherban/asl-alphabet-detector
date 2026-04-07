@@ -11,11 +11,6 @@ import pickle
 import os
 from datetime import datetime
 import mediapipe as mp
-import cv2
-import base64
-import io
-from PIL import Image
-import pyttsx3
 import threading
 
 app = Flask(__name__)
@@ -353,13 +348,13 @@ if __name__ == '__main__':
     print("\n" + "="*60)
     print("ASL Web Application - Backend Server")
     print("="*60)
-    print("[OK] Starting Flask server on http://localhost:5000")
+    print("[OK] Starting Flask server on http://0.0.0.0:7860")
     print("[OK] WebSocket enabled for real-time communication")
     print("="*60 + "\n")
     
     # Use socketio.run for WebSocket support
     try:
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='0.0.0.0', port=7860, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
     except Exception as e:
         print(f"[ERROR] Server failed to start: {e}")
         import traceback
