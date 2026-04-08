@@ -33,23 +33,22 @@ HAND_CONNECTIONS = frozenset([
     (5, 9), (9, 13), (13, 17)  # Palm
 ])
 
-def normalize_landmarks(hand_landmarks_list):
-    """Normalize hand landmarks relative to the wrist (landmark 0)."""
-    coords = []
-    for lm in hand_landmarks_list:
-        coords.append([lm.x, lm.y])
-    
-    coords = np.array(coords)
+def normalize_landmarks(hand_landmarks_list, handedness=None):
+    """Normalize landmarks and mirror left hands into a common orientation."""
+    coords = np.array([[lm.x, lm.y] for lm in hand_landmarks_list], dtype=np.float32)
     wrist = coords[0]
     normalized = coords - wrist
-    
+
+    if handedness and str(handedness).lower().startswith('left'):
+        normalized[:, 0] *= -1
+
     x_min, y_min = normalized.min(axis=0)
     x_max, y_max = normalized.max(axis=0)
     scale = max(x_max - x_min, y_max - y_min)
-    
+
     if scale > 0:
         normalized = normalized / scale
-    
+
     return normalized.flatten()
 
 class ASLTranslator:
@@ -335,7 +334,10 @@ class ASLTranslator:
                         end_point = (int(end_lm.x * w), int(end_lm.y * h))
                         cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
 
-                    normalized_landmarks = normalize_landmarks(hand_landmarks)
+                    handedness = None
+                    if getattr(detection_result, 'handedness', None):
+                        handedness = detection_result.handedness[0][0].category_name
+                    normalized_landmarks = normalize_landmarks(hand_landmarks, handedness)
                     features = normalized_landmarks.reshape(1, -1)
                     probabilities = self.model.predict_proba(features)[0]
                     best_index = int(np.argmax(probabilities))

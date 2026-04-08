@@ -14,6 +14,7 @@ import cv2
 from mediapipe import solutions
 import csv
 import os
+import time
 import numpy as np
 
 # Initialize MediaPipe Hands using the new API
@@ -32,42 +33,22 @@ hands = mp_hands.Hands(
 dataset_path = 'data/asl_dataset.csv'
 data_samples = []
 
-def normalize_landmarks(landmarks):
-    """
-    Normalize hand landmarks relative to the wrist (landmark 0).
-    This makes the model invariant to hand position and distance from camera.
-    
-    Args:
-        landmarks: MediaPipe hand landmarks
-        
-    Returns:
-        Flattened array of normalized x, y coordinates (42 features)
-    """
-    # Extract all landmark coordinates
-    coords = []
-    for lm in landmarks.landmark:
-        coords.append([lm.x, lm.y])
-    
-    coords = np.array(coords)
-    
-    # Get wrist position (landmark 0)
+def normalize_landmarks(landmarks, handedness=None):
+    """Normalize landmarks and mirror left-hand samples into a common orientation."""
+    coords = np.array([[lm.x, lm.y] for lm in landmarks.landmark], dtype=np.float32)
     wrist = coords[0]
-    
-    # Translate all points relative to wrist
     normalized = coords - wrist
-    
-    # Calculate bounding box for scale normalization
+
+    if handedness and str(handedness).lower().startswith('left'):
+        normalized[:, 0] *= -1
+
     x_min, y_min = normalized.min(axis=0)
     x_max, y_max = normalized.max(axis=0)
-    
-    # Calculate scale (max dimension)
     scale = max(x_max - x_min, y_max - y_min)
-    
-    # Avoid division by zero
+
     if scale > 0:
         normalized = normalized / scale
-    
-    # Flatten to 1D array (21 landmarks * 2 coordinates = 42 features)
+
     return normalized.flatten()
 
 def save_dataset():
@@ -104,12 +85,15 @@ def main():
     print("="*60)
     print("\nInstructions:")
     print("  - Show your hand to the camera")
-    print("  - Press A-Z keys to capture and label hand gestures")
+    print("  - Press A-Z or 0-9 keys to capture and label hand gestures")
+    print("  - Samples are saved in lowercase labels for consistency")
     print("  - Press 's' to save collected data")
     print("  - Press 'q' to quit")
     print("="*60 + "\n")
     
     sample_count = {}
+    last_capture_time = 0.0
+    capture_cooldown = 0.20
     
     while True:
         ret, frame = cap.read()
@@ -170,22 +154,24 @@ def main():
             else:
                 print("No data to save!")
         
-        # Capture data for letters A-Z
-        elif chr(key).upper() in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        # Capture data for letters A-Z and digits 0-9
+        elif 32 <= key <= 126 and chr(key).upper() in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789':
+            if time.time() - last_capture_time < capture_cooldown:
+                continue
             if results.multi_hand_landmarks:
-                letter = chr(key).upper()
-                
-                # Normalize landmarks
-                normalized_landmarks = normalize_landmarks(results.multi_hand_landmarks[0])
-                
-                # Create data row: [label, x0, x1, ..., x20, y0, y1, ..., y20]
-                data_row = [letter] + normalized_landmarks.tolist()
+                label = chr(key).lower()
+                handedness = None
+                if results.multi_handedness:
+                    handedness = results.multi_handedness[0].classification[0].label
+
+                normalized_landmarks = normalize_landmarks(results.multi_hand_landmarks[0], handedness)
+                data_row = [label] + normalized_landmarks.tolist()
                 data_samples.append(data_row)
-                
-                # Update count
-                sample_count[letter] = sample_count.get(letter, 0) + 1
-                
-                print(f"✓ Captured sample for letter '{letter}' (Total: {sample_count[letter]})")
+
+                sample_count[label] = sample_count.get(label, 0) + 1
+                last_capture_time = time.time()
+
+                print(f"✓ Captured sample for '{label}' (Total: {sample_count[label]})")
             else:
                 print("✗ No hand detected! Please show your hand to the camera.")
     

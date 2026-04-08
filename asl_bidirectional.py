@@ -31,12 +31,13 @@ HAND_CONNECTIONS = frozenset([
     (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13), (13, 17)
 ])
 
-def normalize_landmarks(hand_landmarks_list):
-    """Normalize hand landmarks"""
-    coords = [[lm.x, lm.y] for lm in hand_landmarks_list]
-    coords = np.array(coords)
+def normalize_landmarks(hand_landmarks_list, handedness=None):
+    """Normalize hand landmarks and mirror left hands into a common orientation."""
+    coords = np.array([[lm.x, lm.y] for lm in hand_landmarks_list], dtype=np.float32)
     wrist = coords[0]
     normalized = coords - wrist
+    if handedness and str(handedness).lower().startswith('left'):
+        normalized[:, 0] *= -1
     x_min, y_min = normalized.min(axis=0)
     x_max, y_max = normalized.max(axis=0)
     scale = max(x_max - x_min, y_max - y_min)
@@ -378,7 +379,10 @@ class BidirectionalASL:
                         start_point = (int(start_lm.x * w), int(start_lm.y * h))
                         end_point = (int(end_lm.x * w), int(end_lm.y * h))
                         cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-                    normalized_landmarks = normalize_landmarks(hand_landmarks)
+                    handedness = None
+                    if getattr(detection_result, 'handedness', None):
+                        handedness = detection_result.handedness[0][0].category_name
+                    normalized_landmarks = normalize_landmarks(hand_landmarks, handedness)
                     features = normalized_landmarks.reshape(1, -1)
                     pred_probs = self.model.predict_proba(features)[0]
                     pred_idx = np.argmax(pred_probs)

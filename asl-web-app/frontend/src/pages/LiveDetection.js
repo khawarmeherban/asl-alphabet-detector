@@ -3,7 +3,7 @@ import axios from 'axios';
 import { Hands } from '@mediapipe/hands';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:7860';
 
 function LiveDetection() {
   const videoRef = useRef(null);
@@ -21,6 +21,14 @@ function LiveDetection() {
   // ========================================
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [sentenceHistory, setSentenceHistory] = useState(() => {
+    try {
+      const saved = localStorage.getItem('asl-word-builder-history');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   
   // ========================================
   // WORD BUILDER Feature:
@@ -36,7 +44,13 @@ function LiveDetection() {
   const predictionBuffer = useRef([]);
   const stableCount = useRef(0);
   const lastPredictionTime = useRef(0);
-  const PREDICTION_THROTTLE = 100; // ms
+  const inFlightPrediction = useRef(false);
+  const lastAcceptedPrediction = useRef({ label: '', at: 0 });
+  const PREDICTION_THROTTLE = 140; // ms
+  const PREDICTION_BUFFER_SIZE = 7;
+  const MIN_CONFIDENCE = 0.7;
+  const REQUIRED_STABLE_HITS = 4;
+  const LETTER_COOLDOWN_MS = 900;
 
   useEffect(() => {
     // Check backend connection
@@ -51,6 +65,10 @@ function LiveDetection() {
     return () => stopCamera();
   }, [isDetecting]);
 
+  useEffect(() => {
+    localStorage.setItem('asl-word-builder-history', JSON.stringify(sentenceHistory.slice(0, 8)));
+  }, [sentenceHistory]);
+
   const checkConnection = async () => {
     try {
       await axios.get(`${API_URL}/health`, { timeout: 5000 });
@@ -58,7 +76,7 @@ function LiveDetection() {
       setError(null);
     } catch (err) {
       setConnectionStatus('disconnected');
-      setError('Cannot connect to backend. Make sure Flask server is running on port 5000.');
+      setError(`Cannot connect to backend. Make sure the Flask server is running at ${API_URL}.`);
     }
   };
 
@@ -245,60 +263,66 @@ function LiveDetection() {
         console.error('Draw landmarks error:', e);
       }
       
-      // Throttle predictions
+      // Throttle and prevent overlapping prediction requests
       const now = Date.now();
-      if (now - lastPredictionTime.current < PREDICTION_THROTTLE) {
+      if (inFlightPrediction.current || now - lastPredictionTime.current < PREDICTION_THROTTLE) {
         ctx.restore();
         return;
       }
       lastPredictionTime.current = now;
       
-      // Normalize and predict
-      const normalizedLandmarks = normalizeLandmarks(landmarks);
+      const handedness = results.multiHandedness?.[0]?.label;
+      const normalizedLandmarks = normalizeLandmarks(landmarks, handedness);
       
       try {
+        inFlightPrediction.current = true;
         const response = await axios.post(`${API_URL}/predict`, {
           landmarks: normalizedLandmarks
         });
         
         const { prediction: pred, confidence: conf } = response.data;
+        setConfidence(conf || 0);
+
+        if (!pred || conf < MIN_CONFIDENCE) {
+          predictionBuffer.current = [];
+          stableCount.current = 0;
+          return;
+        }
         
-        // Add to buffer
-        predictionBuffer.current.push(pred);
-        if (predictionBuffer.current.length > 5) {
+        predictionBuffer.current.push({ label: pred, confidence: conf });
+        if (predictionBuffer.current.length > PREDICTION_BUFFER_SIZE) {
           predictionBuffer.current.shift();
         }
         
-        // Check if prediction is stable
-        const mostCommon = getMostCommon(predictionBuffer.current);
-        if (mostCommon === pred) {
-          stableCount.current++;
-        } else {
-          stableCount.current = 0;
-        }
+        const labels = predictionBuffer.current.map(item => item.label);
+        const mostCommon = getMostCommon(labels);
+        const matches = predictionBuffer.current.filter(item => item.label === mostCommon);
+        const averagedConfidence = matches.reduce((sum, item) => sum + item.confidence, 0) / matches.length;
+
+        setPrediction(mostCommon);
+        setConfidence(averagedConfidence);
+        stableCount.current = matches.length;
         
-        setPrediction(pred);
-        setConfidence(conf);
-        
-        // Add to text if stable
-        if (stableCount.current >= 8) {
-          // Add letter to both old system and Word Builder
-          setTranslatedText(prev => {
-            const newText = prev + pred;
-            // Auto-add space after punctuation or after 4 consecutive letters
-            const shouldAddSpace = /[a-z]{4}$/.test(newText.toLowerCase());
-            fetchWordSuggestions(shouldAddSpace ? newText + ' ' : newText);
-            return shouldAddSpace ? newText + ' ' : newText;
-          });
-          
-          // ========================================
-          // WORD BUILDER: Add detected letter to sentence
-          // This automatically adds each detected letter to build words
-          // ========================================
-          addLetterToSentence(pred);
+        if (stableCount.current >= REQUIRED_STABLE_HITS) {
+          const isDuplicate =
+            lastAcceptedPrediction.current.label === mostCommon &&
+            now - lastAcceptedPrediction.current.at < LETTER_COOLDOWN_MS;
+
+          if (!isDuplicate) {
+            setTranslatedText(prev => {
+              const newText = prev + mostCommon;
+              const shouldAddSpace = /[a-z]{4}$/.test(newText.toLowerCase());
+              const finalText = shouldAddSpace ? `${newText} ` : newText;
+              fetchWordSuggestions(finalText);
+              return finalText;
+            });
+
+            addLetterToSentence(mostCommon);
+            lastAcceptedPrediction.current = { label: mostCommon, at: now };
+          }
           
           stableCount.current = 0;
-          predictionBuffer.current = [];
+          predictionBuffer.current = predictionBuffer.current.slice(-2);
         }
       } catch (error) {
         console.error('Prediction error:', error);
@@ -306,6 +330,8 @@ function LiveDetection() {
           setConnectionStatus('disconnected');
           setError('Lost connection to backend');
         }
+      } finally {
+        inFlightPrediction.current = false;
       }
     }
     
@@ -352,10 +378,14 @@ function LiveDetection() {
     });
   };
 
-  const normalizeLandmarks = (landmarks) => {
+  const normalizeLandmarks = (landmarks, handedness = null) => {
     const coords = landmarks.map(lm => [lm.x, lm.y]);
     const wrist = coords[0];
-    const normalized = coords.map(([x, y]) => [x - wrist[0], y - wrist[1]]);
+    let normalized = coords.map(([x, y]) => [x - wrist[0], y - wrist[1]]);
+
+    if (String(handedness || '').toLowerCase() === 'left') {
+      normalized = normalized.map(([x, y]) => [-x, y]);
+    }
     
     const xs = normalized.map(([x]) => x);
     const ys = normalized.map(([, y]) => y);
@@ -465,9 +495,21 @@ function LiveDetection() {
   };
 
   const applySuggestion = (word) => {
-    const words = translatedText.split(' ');
-    words[words.length - 1] = word;
-    setTranslatedText(words.join(' ') + ' ');
+    const sourceText = builtSentence || translatedText;
+    const trimmed = sourceText.trimEnd();
+    const parts = trimmed ? trimmed.split(/\s+/) : [];
+    if (parts.length === 0) {
+      const next = `${word} `;
+      setTranslatedText(next);
+      setBuiltSentence(next);
+      return;
+    }
+
+    parts[parts.length - 1] = word;
+    const next = `${parts.join(' ')} `;
+    setTranslatedText(next);
+    setBuiltSentence(next);
+    fetchWordSuggestions(next);
   };
   
   // ========================================
@@ -479,7 +521,8 @@ function LiveDetection() {
   // How it works: Add a space character to the sentence (like pressing spacebar)
   // This separates words: "HELLO" + SPACE = "HELLO "
   const handleAddSpace = () => {
-    setBuiltSentence(prev => prev + ' ');
+    setBuiltSentence(prev => (prev.endsWith(' ') || !prev ? prev : `${prev} `));
+    setTranslatedText(prev => (prev.endsWith(' ') || !prev ? prev : `${prev} `));
   };
   
   // BACKSPACE Function:
@@ -488,23 +531,70 @@ function LiveDetection() {
   // Uses .slice(0, -1) which means "take all characters except the last one"
   const handleBackspace = () => {
     setBuiltSentence(prev => prev.slice(0, -1));
+    setTranslatedText(prev => prev.slice(0, -1));
+  };
+
+  const handleDeleteLastWord = () => {
+    const removeLastWord = (text) => text.replace(/\s*\S+\s*$/, '').replace(/\s+$/, ' ');
+    setBuiltSentence(prev => removeLastWord(prev).trimStart());
+    setTranslatedText(prev => removeLastWord(prev).trimStart());
   };
   
   // CLEAR TEXT Function:
   // How it works: Delete everything and start fresh
   // Sets builtSentence to empty string ''
   const handleClearText = () => {
+    const finalSentence = (builtSentence || translatedText).trim();
+    if (finalSentence) {
+      setSentenceHistory(prev => [
+        {
+          text: finalSentence,
+          createdAt: new Date().toISOString()
+        },
+        ...prev.filter(item => item.text !== finalSentence)
+      ].slice(0, 8));
+    }
+
     setBuiltSentence('');
     setTranslatedText('');
     setPrediction('');
     setConfidence(0);
+    setWordSuggestions([]);
   };
   
   // ADD DETECTED LETTER to Word Builder:
   // This function is called when a new ASL sign is detected
   // It adds the letter to our sentence
   const addLetterToSentence = (letter) => {
-    setBuiltSentence(prev => prev + letter);
+    setBuiltSentence(prev => {
+      const shouldAutoSpace = prev.length > 0 && !prev.endsWith(' ') && /[aeiou]/i.test(letter) && /[^aeiou\s]{3,}$/i.test(prev);
+      return shouldAutoSpace ? `${prev} ${letter}` : `${prev}${letter}`;
+    });
+  };
+
+  const restoreHistoryItem = (text) => {
+    const next = `${text.trim()} `;
+    setBuiltSentence(next);
+    setTranslatedText(next);
+    fetchWordSuggestions(next);
+  };
+
+  const getSmartSuggestions = () => {
+    const currentText = (builtSentence || translatedText).trim().toLowerCase();
+    const currentWord = currentText.split(/\s+/).pop() || '';
+    const fallback = ['hello', 'help', 'thank you', 'yes', 'no'];
+
+    const combined = [...wordSuggestions, ...fallback].filter(Boolean);
+    const unique = [...new Set(combined)];
+
+    if (!currentWord) return unique.slice(0, 5);
+    return unique
+      .sort((a, b) => {
+        const aStarts = a.toLowerCase().startsWith(currentWord) ? 0 : 1;
+        const bStarts = b.toLowerCase().startsWith(currentWord) ? 0 : 1;
+        return aStarts - bStarts || a.length - b.length;
+      })
+      .slice(0, 5);
   };
 
   return (
@@ -581,7 +671,7 @@ function LiveDetection() {
                 (Build sentences by adding letters, spaces, and corrections)
               </span>
             </h3>
-            <div className="flex space-x-3">
+            <div className="flex flex-wrap gap-3">
               <button 
                 onClick={handleAddSpace}
                 className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
@@ -595,6 +685,13 @@ function LiveDetection() {
                 title="Delete the last character"
               >
                 ⌫ Backspace
+              </button>
+              <button 
+                onClick={handleDeleteLastWord}
+                className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
+                title="Delete the last full word"
+              >
+                🧹 Delete Word
               </button>
               <button 
                 onClick={handleClearText}
@@ -725,17 +822,25 @@ function LiveDetection() {
                Shows the full sentence being built from detected letters
                This is where all the letters come together to form words!
                ======================================== */}
-          <div className="card bg-green-50 border-4 border-green-300">
-            <h3 className="text-2xl font-bold mb-3 flex items-center text-green-800">
+          <div className="card bg-gradient-to-br from-emerald-50 to-lime-50 border-4 border-emerald-300 shadow-lg">
+            <h3 className="text-2xl font-bold mb-3 flex items-center text-emerald-900">
               📝 Word Builder - Your Complete Sentence
-              <span className="ml-3 text-sm font-normal text-gray-600">
+              <span className="ml-3 text-sm font-normal text-slate-600">
                 (Each detected letter is added here automatically)
               </span>
             </h3>
-            <div className="bg-white p-6 rounded-lg min-h-[120px] text-2xl font-mono border-2 border-green-400">
-              {builtSentence || 'Start signing to build your sentence...'}
+            <div className="bg-white p-6 rounded-lg min-h-[120px] border-2 border-emerald-400 shadow-inner">
+              {builtSentence ? (
+                <p className="text-2xl font-mono font-semibold text-slate-900 tracking-wide break-words leading-relaxed">
+                  {builtSentence}
+                </p>
+              ) : (
+                <p className="text-xl font-medium text-emerald-800">
+                  Start signing to build your sentence...
+                </p>
+              )}
             </div>
-            <div className="mt-3 text-sm text-gray-700 bg-white p-3 rounded-lg">
+            <div className="mt-3 text-sm text-slate-800 bg-white p-3 rounded-lg">
               <strong>💡 How Word Builder Works:</strong>
               <ul className="list-disc list-inside mt-2 space-y-1">
                 <li><strong>Detected letters</strong> are automatically added to your sentence</li>
@@ -748,17 +853,36 @@ function LiveDetection() {
           </div>
 
           {/* Word Suggestions */}
-          {wordSuggestions.length > 0 && (
+          {getSmartSuggestions().length > 0 && (
             <div className="card bg-blue-50">
-              <h3 className="text-xl font-semibold mb-3">Word Suggestions:</h3>
+              <h3 className="text-xl font-semibold mb-3 text-blue-900">🧠 Smart Word Suggestions:</h3>
+              <p className="text-sm text-slate-600 mb-3">Suggestions are prioritized based on your current partial word.</p>
               <div className="flex flex-wrap gap-2">
-                {wordSuggestions.map((word, index) => (
+                {getSmartSuggestions().map((word, index) => (
                   <button
-                    key={index}
+                    key={`${word}-${index}`}
                     onClick={() => applySuggestion(word)}
                     className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors"
                   >
                     {word}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {sentenceHistory.length > 0 && (
+            <div className="card bg-slate-50 border border-slate-200">
+              <h3 className="text-xl font-semibold mb-3 text-slate-800">🕘 Sentence History</h3>
+              <div className="space-y-2">
+                {sentenceHistory.map((item, index) => (
+                  <button
+                    key={`${item.createdAt}-${index}`}
+                    onClick={() => restoreHistoryItem(item.text)}
+                    className="w-full text-left bg-white hover:bg-slate-100 border border-slate-200 rounded-lg px-4 py-3 transition-colors"
+                  >
+                    <div className="font-medium text-slate-900 break-words">{item.text}</div>
+                    <div className="text-xs text-slate-500 mt-1">Tap to restore</div>
                   </button>
                 ))}
               </div>
@@ -798,9 +922,10 @@ function LiveDetection() {
               <h4 className="font-bold text-lg mb-2">✍️ Word Builder Feature:</h4>
               <ul className="list-disc list-inside space-y-2 text-gray-700">
                 <li><strong>Auto-Build:</strong> Each detected letter is automatically added to your sentence</li>
-                <li><strong>Add Space:</strong> Click "Add Space" to separate words (like: HELLO [space] WORLD)</li>
-                <li><strong>Fix Mistakes:</strong> Click "Backspace" to delete the last letter</li>
-                <li><strong>Start Over:</strong> Click "Clear All" to erase everything and begin fresh</li>
+                <li><strong>Add Space:</strong> Click "Add Space" to separate words, or let auto-spacing help while signing</li>
+                <li><strong>Fix Mistakes:</strong> Click "Backspace" to delete one letter or "Delete Word" to remove the last word</li>
+                <li><strong>History:</strong> Restore a previous sentence with one click from Sentence History</li>
+                <li><strong>Smart Suggestions:</strong> Use the blue suggestion chips to complete words faster</li>
                 <li><strong>Real-Time:</strong> See your sentence grow as you sign each letter!</li>
               </ul>
             </div>

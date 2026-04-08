@@ -22,12 +22,15 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
 import pickle
 import os
-from collections import deque, Counter
+from collections import Counter, deque
 
 # Initialize MediaPipe Hands using the tasks API
 BaseOptions = mp.tasks.BaseOptions
@@ -45,43 +48,44 @@ HAND_CONNECTIONS = frozenset([
     (5, 9), (9, 13), (13, 17)  # Palm
 ])
 
-def normalize_landmarks(hand_landmarks_list):
-    """
-    Normalize hand landmarks relative to the wrist (landmark 0).
-    This must match the normalization used in process_dataset.py
-    
-    Args:
-        hand_landmarks_list: List of MediaPipe hand landmarks
-        
-    Returns:
-        Flattened array of normalized x, y coordinates (42 features)
-    """
-    # Extract all landmark coordinates
-    coords = []
-    for lm in hand_landmarks_list:
-        coords.append([lm.x, lm.y])
-    
-    coords = np.array(coords)
-    
-    # Get wrist position (landmark 0)
+def normalize_landmarks(hand_landmarks_list, handedness=None):
+    """Normalize landmarks and mirror left-hand samples into a common orientation."""
+    coords = np.array([[lm.x, lm.y] for lm in hand_landmarks_list], dtype=np.float32)
     wrist = coords[0]
-    
-    # Translate all points relative to wrist
     normalized = coords - wrist
-    
-    # Calculate bounding box for scale normalization
+
+    if handedness and str(handedness).lower().startswith('left'):
+        normalized[:, 0] *= -1
+
     x_min, y_min = normalized.min(axis=0)
     x_max, y_max = normalized.max(axis=0)
-    
-    # Calculate scale (max dimension)
     scale = max(x_max - x_min, y_max - y_min)
-    
-    # Avoid division by zero
+
     if scale > 0:
         normalized = normalized / scale
-    
-    # Flatten to 1D array (21 landmarks * 2 coordinates = 42 features)
+
     return normalized.flatten()
+
+def rebalance_training_data(X, y, random_state=42):
+    """Lightly oversample underrepresented classes with small landmark jitter."""
+    rng = np.random.default_rng(random_state)
+    counts = Counter(y)
+    target_count = max(40, int(np.median(list(counts.values()))))
+
+    x_parts = [X]
+    y_parts = [y]
+
+    for label, count in counts.items():
+        if count >= target_count:
+            continue
+        class_samples = X[y == label]
+        needed = target_count - count
+        indices = rng.choice(len(class_samples), size=needed, replace=True)
+        synthetic = class_samples[indices] + rng.normal(0, 0.01, size=(needed, X.shape[1]))
+        x_parts.append(np.clip(synthetic, -2.5, 2.5))
+        y_parts.append(np.array([label] * needed, dtype=object))
+
+    return np.vstack(x_parts), np.concatenate(y_parts)
 
 def load_and_train_model(dataset_path='data/asl_dataset.csv'):
     """
@@ -116,8 +120,8 @@ def load_and_train_model(dataset_path='data/asl_dataset.csv'):
         print("\n[!] Warning: Very few samples! Collect more data for better accuracy.")
     
     # Prepare features (X) and labels (y)
-    X = df.drop('label', axis=1).values
-    y = df['label'].values
+    X = df.drop('label', axis=1).astype(np.float32).values
+    y = df['label'].astype(str).to_numpy()
     
     # Split data into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(
@@ -127,35 +131,64 @@ def load_and_train_model(dataset_path='data/asl_dataset.csv'):
     print(f"\nTraining set: {len(X_train)} samples")
     print(f"Testing set: {len(X_test)} samples")
     
-    # Train Random Forest Classifier
-    print("\nTraining Random Forest Classifier...")
-    model = RandomForestClassifier(
-        n_estimators=100,
-        max_depth=20,
-        random_state=42,
-        n_jobs=-1
-    )
-    model.fit(X_train, y_train)
-    print("[OK] Training complete!")
-    
-    # Evaluate the model
+    # Rebalance weak classes to improve minority-letter recognition
+    X_train_balanced, y_train_balanced = rebalance_training_data(X_train, y_train)
+    print(f"\nBalanced training set: {len(X_train_balanced)} samples")
+
+    candidate_models = {
+        'RandomForest': RandomForestClassifier(
+            n_estimators=250,
+            max_depth=None,
+            min_samples_leaf=1,
+            class_weight='balanced_subsample',
+            random_state=42,
+            n_jobs=-1
+        ),
+        'ExtraTrees': ExtraTreesClassifier(
+            n_estimators=300,
+            max_depth=None,
+            class_weight='balanced',
+            random_state=42,
+            n_jobs=-1
+        ),
+        'SVC': Pipeline([
+            ('scaler', StandardScaler()),
+            ('svc', SVC(C=8, kernel='rbf', gamma='scale', probability=True, class_weight='balanced', random_state=42))
+        ])
+    }
+
+    best_name = None
+    best_model = None
+    best_accuracy = -1.0
+
+    for name, candidate in candidate_models.items():
+        print(f"\nTraining {name}...")
+        candidate.fit(X_train_balanced, y_train_balanced)
+        y_pred = candidate.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        print(f"[OK] {name} accuracy: {accuracy * 100:.2f}%")
+
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_name = name
+            best_model = candidate
+
+    model = best_model
     y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    
+
     print(f"\n{'='*60}")
-    print(f"Model Accuracy: {accuracy * 100:.2f}%")
+    print(f"Best Model: {best_name}")
+    print(f"Model Accuracy: {best_accuracy * 100:.2f}%")
     print(f"{'='*60}")
-    
-    # Display classification report
+
     print("\nDetailed Classification Report:")
     print(classification_report(y_test, y_pred, zero_division=0))
-    
-    # Optional: Save the trained model
+
     model_path = 'data/asl_model.pkl'
     with open(model_path, 'wb') as f:
         pickle.dump(model, f)
     print(f"[OK] Model saved to {model_path}")
-    
+
     return model
 
 def run_inference(model):
@@ -260,7 +293,10 @@ def run_inference(model):
                     start_point = (int(start_lm.x * w), int(start_lm.y * h))
                     end_point = (int(end_lm.x * w), int(end_lm.y * h))
                     cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-                normalized_landmarks = normalize_landmarks(hand_landmarks)
+                handedness = None
+                if getattr(detection_result, 'handedness', None):
+                    handedness = detection_result.handedness[0][0].category_name
+                normalized_landmarks = normalize_landmarks(hand_landmarks, handedness)
                 features = normalized_landmarks.reshape(1, -1)
                 pred_probs = model.predict_proba(features)[0]
                 pred_idx = np.argmax(pred_probs)

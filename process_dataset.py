@@ -32,42 +32,22 @@ options = HandLandmarkerOptions(
     min_tracking_confidence=0.5
 )
 
-def normalize_landmarks(hand_landmarks_list):
-    """
-    Normalize hand landmarks relative to the wrist (landmark 0).
-    This makes the model invariant to hand position and distance from camera.
-    
-    Args:
-        hand_landmarks_list: List of MediaPipe hand landmarks
-        
-    Returns:
-        Flattened array of normalized x, y coordinates (42 features)
-    """
-    # Extract all landmark coordinates
-    coords = []
-    for lm in hand_landmarks_list:
-        coords.append([lm.x, lm.y])
-    
-    coords = np.array(coords)
-    
-    # Get wrist position (landmark 0)
+def normalize_landmarks(hand_landmarks_list, handedness=None):
+    """Normalize landmarks and mirror left-hand samples into a common orientation."""
+    coords = np.array([[lm.x, lm.y] for lm in hand_landmarks_list], dtype=np.float32)
     wrist = coords[0]
-    
-    # Translate all points relative to wrist
     normalized = coords - wrist
-    
-    # Calculate bounding box for scale normalization
+
+    if handedness and str(handedness).lower().startswith('left'):
+        normalized[:, 0] *= -1
+
     x_min, y_min = normalized.min(axis=0)
     x_max, y_max = normalized.max(axis=0)
-    
-    # Calculate scale (max dimension)
     scale = max(x_max - x_min, y_max - y_min)
-    
-    # Avoid division by zero
+
     if scale > 0:
         normalized = normalized / scale
-    
-    # Flatten to 1D array (21 landmarks * 2 coordinates = 42 features)
+
     return normalized.flatten()
 
 def process_dataset(dataset_root='data/asl_dataset'):
@@ -134,10 +114,13 @@ def process_dataset(dataset_root='data/asl_dataset'):
                 if detection_result.hand_landmarks:
                     # Extract and normalize landmarks
                     hand_landmarks = detection_result.hand_landmarks[0]
-                    normalized_features = normalize_landmarks(hand_landmarks)
+                    handedness = None
+                    if getattr(detection_result, 'handedness', None):
+                        handedness = detection_result.handedness[0][0].category_name
+                    normalized_features = normalize_landmarks(hand_landmarks, handedness)
                     
                     # Create feature dictionary
-                    feature_dict = {'label': class_name}
+                    feature_dict = {'label': class_name.lower()}
                     for i, val in enumerate(normalized_features):
                         if i < 21:
                             feature_dict[f'x{i}'] = val

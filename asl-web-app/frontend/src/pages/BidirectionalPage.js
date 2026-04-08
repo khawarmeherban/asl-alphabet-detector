@@ -4,7 +4,7 @@ import { Mic, MicOff, Volume2 } from 'lucide-react';
 import { Hands } from '@mediapipe/hands';
 import { Camera } from '@mediapipe/camera_utils';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:7860';
 
 function BidirectionalPage() {
   const videoRef = useRef(null);
@@ -20,6 +20,14 @@ function BidirectionalPage() {
   const cameraRef = useRef(null);
   const predictionBuffer = useRef([]);
   const stableCount = useRef(0);
+  const lastPredictionTime = useRef(0);
+  const inFlightPrediction = useRef(false);
+  const lastAcceptedPrediction = useRef({ label: '', at: 0 });
+  const PREDICTION_THROTTLE = 140;
+  const PREDICTION_BUFFER_SIZE = 7;
+  const MIN_CONFIDENCE = 0.7;
+  const REQUIRED_STABLE_HITS = 4;
+  const LETTER_COOLDOWN_MS = 900;
 
   useEffect(() => {
     // Initialize speech recognition
@@ -121,37 +129,62 @@ function BidirectionalPage() {
       const landmarks = results.multiHandLandmarks[0];
       drawHandLandmarks(ctx, landmarks);
       
-      const normalizedLandmarks = normalizeLandmarks(landmarks);
+      const now = Date.now();
+      if (inFlightPrediction.current || now - lastPredictionTime.current < PREDICTION_THROTTLE) {
+        ctx.restore();
+        return;
+      }
+      lastPredictionTime.current = now;
+
+      const handedness = results.multiHandedness?.[0]?.label;
+      const normalizedLandmarks = normalizeLandmarks(landmarks, handedness);
       
       try {
+        inFlightPrediction.current = true;
         const response = await axios.post(`${API_URL}/predict`, {
           landmarks: normalizedLandmarks
         });
         
         const { prediction: pred, confidence: conf } = response.data;
-        
-        predictionBuffer.current.push(pred);
-        if (predictionBuffer.current.length > 5) {
+        setConfidence(conf || 0);
+
+        if (!pred || conf < MIN_CONFIDENCE) {
+          predictionBuffer.current = [];
+          stableCount.current = 0;
+          return;
+        }
+
+        predictionBuffer.current.push({ label: pred, confidence: conf });
+        if (predictionBuffer.current.length > PREDICTION_BUFFER_SIZE) {
           predictionBuffer.current.shift();
         }
+
+        const labels = predictionBuffer.current.map(item => item.label);
+        const mostCommon = getMostCommon(labels);
+        const matches = predictionBuffer.current.filter(item => item.label === mostCommon);
+        const averagedConfidence = matches.reduce((sum, item) => sum + item.confidence, 0) / matches.length;
+
+        setPrediction(mostCommon);
+        setConfidence(averagedConfidence);
+        stableCount.current = matches.length;
         
-        const mostCommon = getMostCommon(predictionBuffer.current);
-        if (mostCommon === pred) {
-          stableCount.current++;
-        } else {
+        if (stableCount.current >= REQUIRED_STABLE_HITS) {
+          const isDuplicate =
+            lastAcceptedPrediction.current.label === mostCommon &&
+            now - lastAcceptedPrediction.current.at < LETTER_COOLDOWN_MS;
+
+          if (!isDuplicate) {
+            setAslText(prev => prev + mostCommon);
+            lastAcceptedPrediction.current = { label: mostCommon, at: now };
+          }
+
           stableCount.current = 0;
-        }
-        
-        setPrediction(pred);
-        setConfidence(conf);
-        
-        if (stableCount.current >= 8) {
-          setAslText(prev => prev + pred);
-          stableCount.current = 0;
-          predictionBuffer.current = [];
+          predictionBuffer.current = predictionBuffer.current.slice(-2);
         }
       } catch (error) {
         console.error('Prediction error:', error);
+      } finally {
+        inFlightPrediction.current = false;
       }
     }
     
@@ -196,10 +229,14 @@ function BidirectionalPage() {
     });
   };
 
-  const normalizeLandmarks = (landmarks) => {
+  const normalizeLandmarks = (landmarks, handedness = null) => {
     const coords = landmarks.map(lm => [lm.x, lm.y]);
     const wrist = coords[0];
-    const normalized = coords.map(([x, y]) => [x - wrist[0], y - wrist[1]]);
+    let normalized = coords.map(([x, y]) => [x - wrist[0], y - wrist[1]]);
+
+    if (String(handedness || '').toLowerCase() === 'left') {
+      normalized = normalized.map(([x, y]) => [-x, y]);
+    }
     
     const xs = normalized.map(([x]) => x);
     const ys = normalized.map(([, y]) => y);
@@ -314,7 +351,7 @@ function BidirectionalPage() {
 
               <div className="bg-white p-4 rounded-lg min-h-[150px] mt-4">
                 <p className="text-gray-500 text-sm mb-2">ASL Text:</p>
-                <p className="text-xl">{aslText || 'Start signing...'}</p>
+                <p className="text-xl text-slate-900 font-medium">{aslText || 'Start signing...'}</p>
               </div>
 
               <div className="flex space-x-2 mt-4">
