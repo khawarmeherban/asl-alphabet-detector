@@ -83,10 +83,10 @@ class ASLTranslator:
         # Conversation state
         self.current_text = ""
         self.conversation_history = []
-        self.prediction_buffer = deque(maxlen=5)
+        self.prediction_buffer = deque(maxlen=7)
         self.last_added_char = None
         self.stable_frames = 0
-        self.min_stable_frames = 8  # Need 8 consistent frames before adding letter
+        self.min_stable_frames = 5  # Lower delay while keeping output stable
         
         # Special commands
         self.command_mode = False
@@ -256,8 +256,21 @@ class ASLTranslator:
         print("="*70)
     
     def run(self):
-        """Run the ASL translator"""
-        # Create hand landmarker options
+        """Run the ASL translator with faster frame handling."""
+        import threading
+        from queue import Queue
+
+        FRAME_SKIP = 1
+        CONFIDENCE_THRESHOLD = 0.80
+
+        def capture_frames(queue, cap):
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if queue.qsize() < 2:
+                    queue.put(frame)
+
         options = HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
             running_mode=VisionRunningMode.VIDEO,
@@ -266,134 +279,127 @@ class ASLTranslator:
             min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5
         )
-        
-        # Open webcam
+
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        
         if not cap.isOpened():
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
                 print("[X] Error: Could not open webcam")
                 return
-        
+
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         cap.set(cv2.CAP_PROP_FPS, 30)
-        
+
         print("\n[OK] Webcam opened successfully")
         print("[OK] Starting ASL translation...")
         print("\nShow ASL signs to translate them to text!")
-        
+
+        frame_queue = Queue()
+        capture_thread = threading.Thread(target=capture_frames, args=(frame_queue, cap), daemon=True)
+        capture_thread.start()
+
         frame_count = 0
         current_prediction = None
         current_confidence = 0
-        
+
         with HandLandmarker.create_from_options(options) as landmarker:
             while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
+                if frame_queue.empty():
+                    continue
+
+                frame = frame_queue.get()
+                frame_count += 1
+                if frame_count % (FRAME_SKIP + 1) != 0:
+                    continue
+
                 frame = cv2.flip(frame, 1)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-                
-                timestamp_ms = frame_count
-                frame_count += 1
-                
-                detection_result = landmarker.detect_for_video(mp_image, timestamp_ms)
-                
-                # Draw UI
+                detection_result = landmarker.detect_for_video(mp_image, frame_count)
+
                 frame = self.draw_ui(frame)
-                
-                # Process hand detection
+
                 if detection_result.hand_landmarks:
                     hand_landmarks = detection_result.hand_landmarks[0]
                     h, w, _ = frame.shape
-                    
-                    # Draw hand landmarks
-                    for i, lm in enumerate(hand_landmarks):
+
+                    for lm in hand_landmarks:
                         cx, cy = int(lm.x * w), int(lm.y * h)
                         cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
-                    
+
                     for connection in HAND_CONNECTIONS:
                         start_lm = hand_landmarks[connection[0]]
                         end_lm = hand_landmarks[connection[1]]
                         start_point = (int(start_lm.x * w), int(start_lm.y * h))
                         end_point = (int(end_lm.x * w), int(end_lm.y * h))
                         cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-                    
-                    # Make prediction
+
                     normalized_landmarks = normalize_landmarks(hand_landmarks)
                     features = normalized_landmarks.reshape(1, -1)
-                    prediction = self.model.predict(features)[0]
-                    confidence = self.model.predict_proba(features).max()
-                    
-                    self.prediction_buffer.append(prediction)
-                    
+                    probabilities = self.model.predict_proba(features)[0]
+                    best_index = int(np.argmax(probabilities))
+                    confidence = float(probabilities[best_index])
+                    prediction = self.model.classes_[best_index]
+
+                    if confidence >= CONFIDENCE_THRESHOLD:
+                        self.prediction_buffer.append(prediction)
+
                     if len(self.prediction_buffer) >= 3:
                         most_common = Counter(self.prediction_buffer).most_common(1)[0][0]
                         current_prediction = most_common
                         current_confidence = confidence
-                        
-                        # Auto-add letter if stable and confident
-                        if confidence > 0.85:
-                            if current_prediction == self.prediction_buffer[-1] == self.prediction_buffer[-2]:
-                                self.stable_frames += 1
-                                
-                                if self.stable_frames >= self.min_stable_frames:
-                                    if self.add_to_text(current_prediction):
-                                        # Visual feedback
-                                        cv2.circle(frame, (w//2, h//2), 50, (0, 255, 0), 5)
-                            else:
-                                self.stable_frames = 0
-                    
+
+                        if confidence >= CONFIDENCE_THRESHOLD and current_prediction == self.prediction_buffer[-1] == self.prediction_buffer[-2]:
+                            self.stable_frames += 1
+                            if self.stable_frames >= self.min_stable_frames:
+                                if self.add_to_text(current_prediction):
+                                    cv2.circle(frame, (w // 2, h // 2), 50, (0, 255, 0), 5)
+                        else:
+                            self.stable_frames = 0
+
                     frame = self.draw_prediction(frame, current_prediction, current_confidence)
                 else:
-                    # No hand detected
-                    cv2.putText(frame, "No hand detected", (frame.shape[1]-250, 200),
+                    cv2.putText(frame, "No hand detected", (frame.shape[1] - 250, 200),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                     self.stable_frames = 0
-                
+
                 cv2.imshow('ASL Translator', frame)
-                
-                # Keyboard commands
+
                 key = cv2.waitKey(1) & 0xFF
-                
-                if key == ord('q') or key == 27:  # Quit
+                if key == ord('q') or key == 27:
                     break
-                elif key == ord('s'):  # Space
+                elif key == ord('s'):
                     self.add_space()
-                elif key == ord('b'):  # Backspace
+                elif key == ord('b'):
                     self.backspace()
-                elif key == ord('c'):  # Clear
+                elif key == ord('c'):
                     self.clear_text()
-                elif key == ord('v'):  # Voice/Speak
+                elif key == ord('v'):
                     self.speak_text()
-                elif key == ord('h'):  # History
+                elif key == ord('h'):
                     self.show_history()
-                elif key == ord('t'):  # Translate
+                elif key == ord('t'):
                     translated = self.translate_text('es')
                     print(f"\n[TRANSLATED]: {translated}")
-                elif key == ord('l'):  # Cycle language
+                elif key == ord('l'):
                     langs = list(self.languages.keys())
                     current_idx = langs.index(self.current_language)
                     self.current_language = langs[(current_idx + 1) % len(langs)]
                     print(f"\n[LANGUAGE CHANGED]: {self.languages[self.current_language]}")
-                
+
                 if cv2.getWindowProperty('ASL Translator', cv2.WND_PROP_VISIBLE) < 1:
                     break
-        
-        # Cleanup
+
         if self.current_text:
             self.clear_text()
-        
+
         cap.release()
         cv2.destroyAllWindows()
-        
-        print("\n" + "="*70)
+
+        print("\n" + "=" * 70)
         print("ASL Translator Closed")
-        print("="*70)
+        print("=" * 70)
         self.show_history()
 
 def main():

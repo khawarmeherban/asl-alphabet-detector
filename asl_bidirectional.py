@@ -73,10 +73,10 @@ class BidirectionalASL:
         self.asl_text = ""  # Text from ASL signs
         self.speech_text = ""  # Text from speech
         self.conversation_history = []
-        self.prediction_buffer = deque(maxlen=5)
+        self.prediction_buffer = deque(maxlen=7)
         self.last_added_char = None
         self.stable_frames = 0
-        self.min_stable_frames = 8
+        self.min_stable_frames = 5
         
         # Speech recognition state
         self.listening = False
@@ -302,7 +302,23 @@ class BidirectionalASL:
                 print(f"[!] Speech error: {e}")
     
     def run(self):
-        """Run the bidirectional system"""
+        """Run the bidirectional system (Optimized)"""
+        import threading
+        from queue import Queue
+
+        # --- Optimization parameters ---
+        FRAME_SKIP = 1  # Process every 2nd frame for better responsiveness
+        PREDICTION_BUFFER_LEN = 7
+        CONFIDENCE_THRESHOLD = 0.80
+
+        def capture_frames(queue, cap):
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if queue.qsize() < 2:
+                    queue.put(frame)
+
         options = HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
             running_mode=VisionRunningMode.VIDEO,
@@ -311,88 +327,84 @@ class BidirectionalASL:
             min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5
         )
-        
+
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not cap.isOpened():
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
                 print("[X] Error: Could not open webcam")
                 return
-        
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        
-        print("\n[OK] Starting bidirectional communication...")
+
+        print("\n[OK] Starting bidirectional communication (Optimized)...")
         print("\nSign with ASL or speak - both work simultaneously!")
-        
+
+        frame_queue = Queue()
+        capture_thread = threading.Thread(target=capture_frames, args=(frame_queue, cap), daemon=True)
+        capture_thread.start()
+
         frame_count = 0
         current_prediction = None
         current_confidence = 0
-        
+        self.prediction_buffer = deque(maxlen=PREDICTION_BUFFER_LEN)
+
         with HandLandmarker.create_from_options(options) as landmarker:
             while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
+                if frame_queue.empty():
+                    continue
+                frame = frame_queue.get()
+                frame_count += 1
+                if frame_count % (FRAME_SKIP + 1) != 0:
+                    continue
+
                 frame = cv2.flip(frame, 1)
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-                
                 timestamp_ms = frame_count
-                frame_count += 1
-                
                 detection_result = landmarker.detect_for_video(mp_image, timestamp_ms)
-                
+
                 frame = self.draw_ui(frame)
-                
+
                 if detection_result.hand_landmarks:
                     hand_landmarks = detection_result.hand_landmarks[0]
                     h, w, _ = frame.shape
-                    
-                    # Draw hand landmarks
                     for lm in hand_landmarks:
                         cx, cy = int(lm.x * w), int(lm.y * h)
                         cv2.circle(frame, (cx, cy), 4, (0, 255, 0), -1)
-                    
                     for connection in HAND_CONNECTIONS:
                         start_lm = hand_landmarks[connection[0]]
                         end_lm = hand_landmarks[connection[1]]
                         start_point = (int(start_lm.x * w), int(start_lm.y * h))
                         end_point = (int(end_lm.x * w), int(end_lm.y * h))
                         cv2.line(frame, start_point, end_point, (255, 0, 0), 2)
-                    
-                    # Predict ASL sign
                     normalized_landmarks = normalize_landmarks(hand_landmarks)
                     features = normalized_landmarks.reshape(1, -1)
-                    prediction = self.model.predict(features)[0]
-                    confidence = self.model.predict_proba(features).max()
-                    
-                    self.prediction_buffer.append(prediction)
-                    
-                    if len(self.prediction_buffer) >= 3:
+                    pred_probs = self.model.predict_proba(features)[0]
+                    pred_idx = np.argmax(pred_probs)
+                    confidence = pred_probs[pred_idx]
+                    prediction = self.model.classes_[pred_idx]
+                    if confidence > CONFIDENCE_THRESHOLD:
+                        self.prediction_buffer.append(prediction)
+                    if len(self.prediction_buffer) > 0:
                         most_common = Counter(self.prediction_buffer).most_common(1)[0][0]
                         current_prediction = most_common
                         current_confidence = confidence
-                        
                         if confidence > 0.85:
-                            if current_prediction == self.prediction_buffer[-1] == self.prediction_buffer[-2]:
+                            if len(self.prediction_buffer) > 2 and current_prediction == self.prediction_buffer[-1] == self.prediction_buffer[-2]:
                                 self.stable_frames += 1
-                                
                                 if self.stable_frames >= self.min_stable_frames:
                                     if self.add_to_asl_text(current_prediction):
                                         cv2.circle(frame, (w//2, 220), 30, (0, 255, 0), 5)
                             else:
                                 self.stable_frames = 0
-                    
                     frame = self.draw_prediction(frame, current_prediction, current_confidence)
                 else:
                     self.stable_frames = 0
-                
+
                 cv2.imshow('Bidirectional ASL Communication', frame)
-                
+
                 key = cv2.waitKey(1) & 0xFF
-                
                 if key == ord('q') or key == 27:
                     break
                 elif key == ord('s'):
@@ -412,17 +424,14 @@ class BidirectionalASL:
                     self.read_speech_aloud()
                 elif key == ord('h'):
                     self.show_history()
-                
                 if cv2.getWindowProperty('Bidirectional ASL Communication', cv2.WND_PROP_VISIBLE) < 1:
                     break
-        
+
         self.stop_listening()
         if self.asl_text:
             self.clear_asl_text()
-        
         cap.release()
         cv2.destroyAllWindows()
-        
         print("\n" + "="*70)
         print("Bidirectional Communication Closed")
         print("="*70)

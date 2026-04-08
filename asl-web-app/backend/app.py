@@ -1,21 +1,32 @@
 """
-Flask Backend API for ASL Web Application
-Serves ML model predictions and handles real-time communication
+Flask Backend API for ASL Web Application.
+Serves ML model predictions and handles real-time communication.
 """
 
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import os
+import pickle
+import threading
+
+import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
-import numpy as np
-import pickle
-import os
-from datetime import datetime
-import mediapipe as mp
-import threading
 
 app = Flask(__name__)
 CORS(app, origins=['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'])
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+predict_executor = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2))
+
+@app.route("/", methods=["GET"])
+def root():
+    return jsonify({
+        "status": "ok",
+        "message": "ASL backend is running",
+        "model_loaded": model is not None
+    })
 
 # Load ML model - Fixed path resolution
 # Get the directory where this script is located
@@ -39,32 +50,19 @@ except Exception as e:
     print("[INFO] Server will run but predictions will not work until model is fixed")
     model = None
 
-# Initialize MediaPipe
-BaseOptions = mp.tasks.BaseOptions
-HandLandmarker = mp.tasks.vision.HandLandmarker
-HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
-VisionRunningMode = mp.tasks.vision.RunningMode
-
-# TTS Engine with thread lock - DISABLED due to Python 3.13 compatibility
+# TTS Engine with thread lock - disabled due to Python 3.13 compatibility
 tts_lock = threading.Lock()
 tts_engine = None
-# Commenting out due to pyttsx3 issues with Python 3.13
-# try:
-#     tts_engine = pyttsx3.init()
-#     tts_engine.setProperty('rate', 150)
-#     tts_engine.setProperty('volume', 0.9)
-#     print("[OK] Text-to-Speech initialized")
-# except Exception as e:
-#     print(f"[WARNING] TTS initialization failed: {e}")
-#     print("[INFO] Speech features will be disabled")
 print("[INFO] Text-to-Speech disabled (Python 3.13 compatibility)")
 
-# Conversation history (limit to 500 items for memory efficiency)
+# Thread-safe shared state
 conversation_history = []
 MAX_HISTORY = 500
-
-# Prediction cache for performance
-prediction_cache = {}
+CACHE_LIMIT = 256
+MODEL_FEATURES = getattr(model, 'n_features_in_', None)
+history_lock = threading.Lock()
+cache_lock = threading.Lock()
+prediction_cache = OrderedDict()
 
 # Word prediction dictionary (simple implementation)
 COMMON_WORDS = [
@@ -87,59 +85,103 @@ def normalize_landmarks(hand_landmarks_list):
     return normalized.flatten()
 
 def predict_words(current_text):
-    """Simple word prediction based on current text"""
+    """Simple word prediction based on current text."""
     if not current_text:
         return COMMON_WORDS[:5]
-    
+
     last_word = current_text.split()[-1].lower() if current_text.split() else ""
     predictions = [w for w in COMMON_WORDS if w.startswith(last_word)]
     return predictions[:5] if predictions else COMMON_WORDS[:5]
 
+def _prepare_features(landmarks):
+    arr = np.asarray(landmarks, dtype=np.float32).flatten()
+    if arr.size == 0:
+        raise ValueError('No landmarks provided')
+    if MODEL_FEATURES and arr.size != MODEL_FEATURES:
+        raise ValueError(f'Expected {MODEL_FEATURES} features, received {arr.size}')
+    return arr.reshape(1, -1)
+
+def _cache_key(landmarks):
+    arr = np.asarray(landmarks, dtype=np.float32).flatten()
+    return tuple(np.round(arr[:min(12, arr.size)], 3))
+
+def predict_landmarks_cached(landmarks):
+    """Run a fast cached prediction for one landmark vector."""
+    if model is None:
+        raise RuntimeError('Model not loaded')
+
+    cache_key = _cache_key(landmarks)
+    with cache_lock:
+        cached = prediction_cache.get(cache_key)
+        if cached is not None:
+            prediction_cache.move_to_end(cache_key)
+            return {**cached, 'cached': True}
+
+    features = _prepare_features(landmarks)
+    probabilities = model.predict_proba(features)[0]
+    best_index = int(np.argmax(probabilities))
+    result = {
+        'prediction': str(model.classes_[best_index]),
+        'confidence': float(probabilities[best_index]),
+        'timestamp': datetime.now().isoformat(),
+        'cached': False
+    }
+
+    with cache_lock:
+        prediction_cache[cache_key] = result
+        prediction_cache.move_to_end(cache_key)
+        while len(prediction_cache) > CACHE_LIMIT:
+            prediction_cache.popitem(last=False)
+
+    return result
+
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
+    """Health check endpoint."""
     return jsonify({
         'status': 'healthy',
         'model_loaded': model is not None,
+        'feature_count': MODEL_FEATURES,
+        'cache_size': len(prediction_cache),
         'timestamp': datetime.now().isoformat()
     })
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Predict ASL sign from landmarks"""
+    """Predict one ASL sign from landmarks."""
     try:
-        data = request.json
+        data = request.get_json(silent=True) or {}
         landmarks = data.get('landmarks')
-        
-        if not landmarks or not model:
-            return jsonify({'error': 'Invalid data or model not loaded'}), 400
-        
-        # Create cache key from landmarks
-        cache_key = tuple(round(x, 3) for x in landmarks[:10])  # First 10 for efficiency
-        
-        # Check cache first
-        if cache_key in prediction_cache:
-            cached_result = prediction_cache[cache_key]
-            return jsonify(cached_result)
-        
-        # Normalize and predict
-        features = np.array(landmarks).reshape(1, -1)
-        prediction = model.predict(features)[0]
-        confidence = float(model.predict_proba(features).max())
-        
-        result = {
-            'prediction': prediction,
-            'confidence': confidence,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        # Cache result (limit cache size)
-        if len(prediction_cache) > 100:
-            prediction_cache.clear()
-        prediction_cache[cache_key] = result
-        
+        if not isinstance(landmarks, list) or not landmarks:
+            return jsonify({'error': 'Invalid or missing landmarks'}), 400
+
+        result = predict_executor.submit(predict_landmarks_cached, landmarks).result()
         return jsonify(result)
-    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/predict/batch', methods=['POST'])
+def predict_batch():
+    """Predict multiple landmark sets in one request."""
+    try:
+        data = request.get_json(silent=True) or {}
+        samples = data.get('samples') or data.get('items') or []
+        if not isinstance(samples, list) or not samples:
+            return jsonify({'error': 'Provide a non-empty samples list'}), 400
+
+        results = []
+        for sample in samples[:32]:
+            landmarks = sample.get('landmarks') if isinstance(sample, dict) else sample
+            try:
+                results.append(predict_landmarks_cached(landmarks))
+            except Exception as exc:
+                results.append({'error': str(exc)})
+
+        return jsonify({
+            'results': results,
+            'count': len(results),
+            'timestamp': datetime.now().isoformat()
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -195,71 +237,73 @@ def speak():
 
 @app.route('/history', methods=['GET'])
 def get_history():
-    """Get conversation history"""
+    """Get conversation history."""
+    with history_lock:
+        history_snapshot = list(conversation_history)
     return jsonify({
-        'history': conversation_history,
-        'count': len(conversation_history)
+        'history': history_snapshot,
+        'count': len(history_snapshot)
     })
 
 @app.route('/history', methods=['POST'])
 def add_history():
-    """Add to conversation history"""
+    """Add to conversation history."""
     try:
-        data = request.json
+        data = request.get_json(silent=True) or {}
         text = data.get('text', '').strip()
-        
-        # Skip empty or duplicate messages
-        if not text or (conversation_history and conversation_history[-1].get('text') == text):
-            return jsonify({'status': 'skipped', 'total': len(conversation_history)})
-        
-        conversation_history.append({
-            'text': text,
-            'speaker': data.get('speaker', 'User'),
-            'mode': data.get('mode', 'ASL'),
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        # Maintain history limit
-        if len(conversation_history) > MAX_HISTORY:
-            conversation_history.pop(0)
-        
-        return jsonify({
-            'status': 'added',
-            'total': len(conversation_history)
-        })
-    
+
+        with history_lock:
+            if not text or (conversation_history and conversation_history[-1].get('text') == text):
+                return jsonify({'status': 'skipped', 'total': len(conversation_history)})
+
+            conversation_history.append({
+                'text': text,
+                'speaker': data.get('speaker', 'User'),
+                'mode': data.get('mode', 'ASL'),
+                'timestamp': datetime.now().isoformat()
+            })
+
+            while len(conversation_history) > MAX_HISTORY:
+                conversation_history.pop(0)
+
+            total = len(conversation_history)
+
+        return jsonify({'status': 'added', 'total': total})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 @app.route('/history', methods=['DELETE'])
 def clear_history():
-    """Clear conversation history"""
-    conversation_history.clear()
+    """Clear conversation history."""
+    with history_lock:
+        conversation_history.clear()
     return jsonify({'status': 'cleared'})
 
 @app.route('/statistics', methods=['GET'])
 def get_statistics():
-    """Get usage statistics"""
-    if not conversation_history:
+    """Get usage statistics."""
+    with history_lock:
+        history_snapshot = list(conversation_history)
+
+    if not history_snapshot:
         return jsonify({
             'total_messages': 0,
             'asl_messages': 0,
             'voice_messages': 0,
             'letter_frequency': {}
         })
-    
-    asl_count = sum(1 for h in conversation_history if h['mode'] == 'ASL')
-    voice_count = len(conversation_history) - asl_count
-    
-    # Calculate letter frequency
-    all_text = ''.join([h['text'].lower() for h in conversation_history])
+
+    asl_count = sum(1 for h in history_snapshot if h['mode'] == 'ASL')
+    voice_count = len(history_snapshot) - asl_count
+    all_text = ''.join(item['text'].lower() for item in history_snapshot)
+
     letter_freq = {}
     for char in all_text:
         if char.isalpha():
             letter_freq[char] = letter_freq.get(char, 0) + 1
-    
+
     return jsonify({
-        'total_messages': len(conversation_history),
+        'total_messages': len(history_snapshot),
         'asl_messages': asl_count,
         'voice_messages': voice_count,
         'letter_frequency': letter_freq,
@@ -328,19 +372,15 @@ def handle_disconnect():
 
 @socketio.on('asl_prediction')
 def handle_asl_prediction(data):
-    """Real-time ASL prediction via WebSocket"""
+    """Real-time ASL prediction via WebSocket."""
     try:
-        landmarks = data.get('landmarks')
-        if landmarks and model:
-            features = np.array(landmarks).reshape(1, -1)
-            prediction = model.predict(features)[0]
-            confidence = float(model.predict_proba(features).max())
-            
-            emit('prediction_result', {
-                'prediction': prediction,
-                'confidence': confidence,
-                'timestamp': datetime.now().isoformat()
-            })
+        landmarks = (data or {}).get('landmarks')
+        if not landmarks:
+            emit('error', {'message': 'Missing landmarks'})
+            return
+
+        result = predict_landmarks_cached(landmarks)
+        emit('prediction_result', result)
     except Exception as e:
         emit('error', {'message': str(e)})
 

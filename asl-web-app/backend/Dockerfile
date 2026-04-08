@@ -17,5 +17,5 @@ COPY --chown=user . /app
 # Expose the port required by Hugging Face Spaces
 EXPOSE 7860
 
-# Start the Flask app on port 7860
-CMD ["python", "app.py"]
+# Start the Flask app with gunicorn and eventlet for SocketIO support
+CMD ["gunicorn", "--worker-class", "eventlet", "-w", "1", "-b", "0.0.0.0:7860", "app:app"]

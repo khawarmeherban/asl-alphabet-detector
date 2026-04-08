@@ -10,9 +10,7 @@ ENV/
 *.egg-info/
 
 # Models & Data
-*.pkl
-*.h5
-*.model
+# (Do not ignore model/data files for deployment)
 
 # IDE
 .vscode/
