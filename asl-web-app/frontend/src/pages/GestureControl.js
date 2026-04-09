@@ -449,10 +449,10 @@ function GestureControl() {
           if (prevGesture !== 'Three Fingers') {
             if (gestureTimerRef.current) clearTimeout(gestureTimerRef.current);
             gestureTimerRef.current = setTimeout(() => {
-              const nextTrack = (currentTrack + 1) % youtubePlaylist.length;
+              const nextTrack = (currentTrack + 1) % YOUTUBE_PLAYLIST.length;
               setCurrentTrack(nextTrack);
               try {
-                youtubePlayerRef.current.loadVideoById(youtubePlaylist[nextTrack].id);
+                youtubePlayerRef.current.loadVideoById(YOUTUBE_PLAYLIST[nextTrack].id);
                 if (isPlaying) {
                   setTimeout(() => {
                     youtubePlayerRef.current.playVideo();
@@ -472,10 +472,10 @@ function GestureControl() {
           if (prevGesture !== 'Four Fingers') {
             if (gestureTimerRef.current) clearTimeout(gestureTimerRef.current);
             gestureTimerRef.current = setTimeout(() => {
-              const prevTrack = currentTrack === 0 ? youtubePlaylist.length - 1 : currentTrack - 1;
+              const prevTrack = currentTrack === 0 ? YOUTUBE_PLAYLIST.length - 1 : currentTrack - 1;
               setCurrentTrack(prevTrack);
               try {
-                youtubePlayerRef.current.loadVideoById(youtubePlaylist[prevTrack].id);
+                youtubePlayerRef.current.loadVideoById(YOUTUBE_PLAYLIST[prevTrack].id);
                 if (isPlaying) {
                   setTimeout(() => {
                     youtubePlayerRef.current.playVideo();
@@ -793,10 +793,10 @@ function GestureControl() {
                    transition: 'transform 0.3s ease'
                  }}>
               <div className="p-4">
-                <p className="font-semibold text-gray-800">{youtubePlaylist[currentTrack].title}</p>
-                <p className="text-sm text-gray-600">{youtubePlaylist[currentTrack].artist}</p>
+                <p className="font-semibold text-gray-800">{YOUTUBE_PLAYLIST[currentTrack].title}</p>
+                <p className="text-sm text-gray-600">{YOUTUBE_PLAYLIST[currentTrack].artist}</p>
                 <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
-                  <span>Video {currentTrack + 1} of {youtubePlaylist.length}</span>
+                  <span>Video {currentTrack + 1} of {YOUTUBE_PLAYLIST.length}</span>
                   {isYouTubeReady ? (
                     <span className="text-green-600">✓ Ready</span>
                   ) : (
