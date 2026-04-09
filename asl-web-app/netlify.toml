@@ -17,7 +17,7 @@
   [build.environment]
     NODE_VERSION = "18"
     NPM_VERSION = "9"
-    REACT_APP_API_URL = "https://your-backend-api.onrender.com"
+    REACT_APP_API_URL = "https://khawar26-asl-backend.hf.space"
 
 # Headers for enhanced security and performance
 [[headers]]
@@ -28,7 +28,7 @@
     X-Content-Type-Options = "nosniff"
     X-XSS-Protection = "1; mode=block"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    Permissions-Policy = "camera=*, microphone=*, geolocation=()"
+    Permissions-Policy = "camera=(self), microphone=(self), geolocation=()"
     
     # Performance headers
     Cache-Control = "public, max-age=31536000, immutable"
