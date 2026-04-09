@@ -15,9 +15,13 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
+PORT = int(os.getenv('PORT', '7860'))
+CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
+SOCKETIO_ASYNC_MODE = os.getenv('SOCKETIO_ASYNC_MODE', 'threading')
+
 app = Flask(__name__)
-CORS(app, origins=['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'])
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+CORS(app, origins=CORS_ORIGINS)
+socketio = SocketIO(app, cors_allowed_origins=CORS_ORIGINS, async_mode=SOCKETIO_ASYNC_MODE)
 predict_executor = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2))
 
 @app.route("/", methods=["GET"])
@@ -28,23 +32,29 @@ def root():
         "model_loaded": model is not None
     })
 
-# Load ML model - Fixed path resolution
-# Get the directory where this script is located
+# Load ML model with local + deployment-friendly path resolution
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Go up two levels to reach the project root, then into data folder
-MODEL_PATH = os.path.join(SCRIPT_DIR, '..', '..', 'data', 'asl_model.pkl')
-MODEL_PATH = os.path.normpath(MODEL_PATH)  # Normalize the path
+MODEL_CANDIDATES = [
+    os.getenv('ASL_MODEL_PATH', '').strip(),
+    os.path.join(SCRIPT_DIR, 'asl_model.pkl'),
+    os.path.join(SCRIPT_DIR, '..', '..', 'data', 'asl_model.pkl'),
+]
+MODEL_CANDIDATES = [os.path.normpath(path) for path in MODEL_CANDIDATES if path]
+MODEL_PATH = next(
+    (path for path in MODEL_CANDIDATES if os.path.exists(path)),
+    MODEL_CANDIDATES[0] if MODEL_CANDIDATES else 'asl_model.pkl'
+)
 
-print(f"[INFO] Looking for model at: {MODEL_PATH}")
+print(f"[INFO] Model search paths: {MODEL_CANDIDATES}")
 model = None
 try:
     if os.path.exists(MODEL_PATH):
         with open(MODEL_PATH, 'rb') as f:
             model = pickle.load(f)
-        print("[OK] ✓ Model loaded successfully!")
+        print(f"[OK] ✓ Model loaded successfully from: {MODEL_PATH}")
     else:
-        print(f"[WARNING] Model not found at: {MODEL_PATH}")
-        print("[INFO] Please train the model first by running process_dataset.py")
+        print(f"[WARNING] Model not found. Checked: {MODEL_CANDIDATES}")
+        print("[INFO] Please train the model first or copy asl_model.pkl into the backend directory")
 except Exception as e:
     print(f"[ERROR] Failed to load model: {e}")
     print("[INFO] Server will run but predictions will not work until model is fixed")
@@ -388,13 +398,13 @@ if __name__ == '__main__':
     print("\n" + "="*60)
     print("ASL Web Application - Backend Server")
     print("="*60)
-    print("[OK] Starting Flask server on http://0.0.0.0:7860")
+    print(f"[OK] Starting Flask server on http://0.0.0.0:{PORT}")
     print("[OK] WebSocket enabled for real-time communication")
     print("="*60 + "\n")
     
     # Use socketio.run for WebSocket support
     try:
-        socketio.run(app, host='0.0.0.0', port=7860, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='0.0.0.0', port=PORT, debug=False, use_reloader=False, allow_unsafe_werkzeug=True)
     except Exception as e:
         print(f"[ERROR] Server failed to start: {e}")
         import traceback

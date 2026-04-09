@@ -1,3 +1,14 @@
+---
+title: ASL Backend
+emoji: 🤟
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
 # Hugging Face Spaces - ASL Backend
 
 This backend serves the ASL Alphabet Detector web app using Flask. It provides ML model inference and real-time communication APIs.

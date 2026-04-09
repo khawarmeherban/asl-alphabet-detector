@@ -4,6 +4,7 @@ FROM python:3.10-slim
 RUN useradd -m -u 1000 user
 USER user
 ENV PATH="/home/user/.local/bin:$PATH"
+ENV SOCKETIO_ASYNC_MODE=eventlet
 
 WORKDIR /app
 
