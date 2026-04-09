@@ -52,6 +52,7 @@ function LiveDetection() {
   const REQUIRED_STABLE_HITS = 4;
   const LETTER_COOLDOWN_MS = 900;
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     // Check backend connection
     checkConnection();
@@ -63,6 +64,7 @@ function LiveDetection() {
     }
 
     return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDetecting]);
 
   useEffect(() => {

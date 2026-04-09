@@ -2,9 +2,15 @@ import React, { useRef, useEffect, useState } from 'react';
 import axios from 'axios';
 import { Hands } from '@mediapipe/hands';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
-import { Volume2, VolumeX, Play, Pause, Sun, Moon, Video, Monitor, Camera } from 'lucide-react';
+import { Volume2, VolumeX, Play, Pause, Sun, Camera } from 'lucide-react';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const YOUTUBE_PLAYLIST = [
+  { id: 'bDN7vV50rSs', title: 'Video 1', artist: 'Your Playlist' },
+  { id: 'yAV5aZ0unag', title: 'Video 2', artist: 'Your Playlist' },
+  { id: 'WGWsH_CD2D0', title: 'Video 3', artist: 'Your Playlist' },
+  { id: 'Wn2eexjum6Q', title: 'Video 4', artist: 'Your Playlist' }
+];
 
 function GestureControl() {
   const videoRef = useRef(null);
@@ -29,21 +35,8 @@ function GestureControl() {
   const previousGestureRef = useRef('None');
   const gestureTimerRef = useRef(null);
   
-  const playlist = [
-    { title: 'Demo Track 1', artist: 'Sample Artist' },
-    { title: 'Demo Track 2', artist: 'Sample Artist' },
-    { title: 'Demo Track 3', artist: 'Sample Artist' }
-  ];
-
-  // YouTube video playlist - Add your video IDs here
-  const youtubePlaylist = [
-    { id: 'bDN7vV50rSs', title: 'Video 1', artist: 'Your Playlist' },
-    { id: 'yAV5aZ0unag', title: 'Video 2', artist: 'Your Playlist' },
-    { id: 'WGWsH_CD2D0', title: 'Video 3', artist: 'Your Playlist' },
-    { id: 'Wn2eexjum6Q', title: 'Video 4', artist: 'Your Playlist' }
-  ];
-
   // Check if camera API is available
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setCameraError('Camera API not supported. Please use a modern browser (Chrome, Firefox, or Edge) and ensure you are on HTTPS or localhost.');
@@ -60,7 +53,7 @@ function GestureControl() {
       youtubePlayerRef.current = new window.YT.Player('youtube-player', {
         height: '100%',
         width: '100%',
-        videoId: youtubePlaylist[0].id,
+        videoId: YOUTUBE_PLAYLIST[0].id,
         playerVars: {
           autoplay: 0,
           controls: 1,
@@ -68,9 +61,8 @@ function GestureControl() {
           rel: 0
         },
         events: {
-          onReady: (event) => {
+          onReady: () => {
             setIsYouTubeReady(true);
-            event.target.setVolume(volume);
           },
           onStateChange: (event) => {
             if (event.data === window.YT.PlayerState.PLAYING) {
@@ -90,6 +82,7 @@ function GestureControl() {
     };
   }, []);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     checkConnection();
     
@@ -100,6 +93,7 @@ function GestureControl() {
     }
 
     return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive]);
 
   // Sync audio volume and mute
@@ -873,7 +867,7 @@ function GestureControl() {
           <li>Hold gestures steady for 1-2 seconds for recognition</li>
           <li>Avoid cluttered backgrounds</li>
           <li>� YouTube videos play in background - you can control them with gestures!</li>
-          <li>📝 To add your own videos, replace video IDs in <code>youtubePlaylist</code> array</li>
+          <li>📝 To add your own videos, replace video IDs in <code>YOUTUBE_PLAYLIST</code> array</li>
         </ul>
       </div>
     </div>

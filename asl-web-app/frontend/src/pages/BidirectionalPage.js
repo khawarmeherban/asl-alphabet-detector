@@ -38,19 +38,18 @@ function BidirectionalPage() {
       recognition.lang = 'en-US';
 
       recognition.onresult = (event) => {
-        let interimTranscript = '';
         let finalTranscript = '';
 
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
             finalTranscript += transcript + ' ';
-          } else {
-            interimTranscript += transcript;
           }
         }
 
-        setVoiceText(prev => prev + finalTranscript);
+        if (finalTranscript) {
+          setVoiceText(prev => prev + finalTranscript);
+        }
       };
 
       recognition.onerror = (event) => {
@@ -69,12 +68,14 @@ function BidirectionalPage() {
     };
   }, []);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (isASLActive) {
       initializeASL();
     } else {
       stopASLDetection();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isASLActive]);
 
   const initializeASL = () => {
