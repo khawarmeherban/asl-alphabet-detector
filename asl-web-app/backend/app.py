@@ -3,21 +3,35 @@ Flask Backend API for ASL Web Application.
 Serves ML model predictions and handles real-time communication.
 """
 
-from collections import OrderedDict
+from collections import Counter, OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import os
 import pickle
+import sys
 import threading
+
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.normpath(os.path.join(BACKEND_DIR, '..', '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
+from asl_feature_utils import prepare_model_features, top_k_predictions
+
 PORT = int(os.getenv('PORT', '7860'))
 CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
 SOCKETIO_ASYNC_MODE = os.getenv('SOCKETIO_ASYNC_MODE', 'threading')
+MIN_PREDICTION_CONFIDENCE = float(os.getenv('MIN_PREDICTION_CONFIDENCE', '0.72'))
+MIN_PREDICTION_MARGIN = float(os.getenv('MIN_PREDICTION_MARGIN', '0.08'))
+TEMPORAL_WINDOW_SIZE = int(os.getenv('TEMPORAL_WINDOW_SIZE', '6'))
+TEMPORAL_MIN_HITS = int(os.getenv('TEMPORAL_MIN_HITS', '4'))
+TEMPORAL_MIN_RATIO = float(os.getenv('TEMPORAL_MIN_RATIO', '0.65'))
+SESSION_STATE_LIMIT = int(os.getenv('SESSION_STATE_LIMIT', '256'))
 
 app = Flask(__name__)
 CORS(app, origins=CORS_ORIGINS)
@@ -33,11 +47,11 @@ def root():
     })
 
 # Load ML model with local + deployment-friendly path resolution
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = BACKEND_DIR
 MODEL_CANDIDATES = [
     os.getenv('ASL_MODEL_PATH', '').strip(),
-    os.path.join(SCRIPT_DIR, 'asl_model.pkl'),
     os.path.join(SCRIPT_DIR, '..', '..', 'data', 'asl_model.pkl'),
+    os.path.join(SCRIPT_DIR, 'asl_model.pkl'),
 ]
 MODEL_CANDIDATES = [os.path.normpath(path) for path in MODEL_CANDIDATES if path]
 MODEL_PATH = next(
@@ -70,16 +84,44 @@ conversation_history = []
 MAX_HISTORY = 500
 CACHE_LIMIT = 256
 MODEL_FEATURES = getattr(model, 'n_features_in_', None)
+MODEL_FEATURE_MODE = getattr(model, 'asl_feature_mode', 'raw_xy_v1') if model is not None else 'unavailable'
 history_lock = threading.Lock()
 cache_lock = threading.Lock()
+session_lock = threading.Lock()
 prediction_cache = OrderedDict()
+session_prediction_state = OrderedDict()
 
-# Word prediction dictionary (simple implementation)
+# Word prediction dictionary and common assistive phrases
 COMMON_WORDS = [
-    'hello', 'hi', 'thank', 'you', 'please', 'sorry', 'yes', 'no',
-    'good', 'morning', 'afternoon', 'evening', 'night', 'how', 'are',
-    'what', 'when', 'where', 'why', 'who', 'help', 'need', 'want'
+    'hello', 'hi', 'help', 'need', 'water', 'medicine', 'please', 'sorry',
+    'thank', 'you', 'yes', 'no', 'good', 'morning', 'afternoon', 'evening',
+    'night', 'how', 'are', 'what', 'when', 'where', 'why', 'who', 'want',
+    'food', 'bathroom', 'family', 'call', 'pain', 'doctor', 'emergency', 'fine'
 ]
+COMMON_PHRASES = [
+    'Hello', 'How are you?', 'I need help', 'Please wait', 'Thank you',
+    'Yes, please', 'No, thank you', 'I need water', 'I need medicine',
+    'Call my family', 'I am fine', 'I am in pain', 'Please call a doctor'
+]
+PHRASE_HINTS = {
+    'hello': ['Hello', 'Hello, how are you?'],
+    'help': ['I need help', 'Please help me'],
+    'please': ['Please wait', 'Please help me'],
+    'thank': ['Thank you', 'Thank you very much'],
+    'need': ['I need help', 'I need water', 'I need medicine'],
+    'pain': ['I am in pain', 'Please call a doctor'],
+    'call': ['Call my family', 'Please call a doctor'],
+}
+
+def _unique_preserve(items):
+    seen = set()
+    ordered = []
+    for item in items:
+        normalized = str(item).strip().lower()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            ordered.append(str(item).strip())
+    return ordered
 
 def normalize_landmarks(hand_landmarks_list):
     """Normalize hand landmarks"""
@@ -95,27 +137,137 @@ def normalize_landmarks(hand_landmarks_list):
     return normalized.flatten()
 
 def predict_words(current_text):
-    """Simple word prediction based on current text."""
-    if not current_text:
-        return COMMON_WORDS[:5]
+    """Return context-aware word and phrase suggestions for the current text buffer."""
+    normalized_text = ' '.join(str(current_text or '').strip().split())
+    lowered_text = normalized_text.lower()
+    tokens = lowered_text.split()
+    current_word = tokens[-1] if tokens else ''
 
-    last_word = current_text.split()[-1].lower() if current_text.split() else ""
-    predictions = [w for w in COMMON_WORDS if w.startswith(last_word)]
-    return predictions[:5] if predictions else COMMON_WORDS[:5]
+    word_candidates = []
+    phrase_candidates = []
+
+    if current_word:
+        word_candidates.extend(word for word in COMMON_WORDS if word.startswith(current_word))
+        word_candidates.extend(word for word in COMMON_WORDS if current_word in word and not word.startswith(current_word))
+    else:
+        word_candidates.extend(COMMON_WORDS)
+
+    if lowered_text:
+        phrase_candidates.extend(phrase for phrase in COMMON_PHRASES if phrase.lower().startswith(lowered_text))
+
+    if current_word:
+        phrase_candidates.extend(phrase for phrase in COMMON_PHRASES if any(part.startswith(current_word) for part in phrase.lower().split()))
+        phrase_candidates.extend(PHRASE_HINTS.get(current_word, []))
+
+    if len(tokens) >= 2:
+        context_key = ' '.join(tokens[-2:])
+        phrase_candidates.extend(PHRASE_HINTS.get(context_key, []))
+
+    if tokens:
+        phrase_candidates.extend(PHRASE_HINTS.get(tokens[0], []))
+
+    return {
+        'words': _unique_preserve(word_candidates)[:5] or COMMON_WORDS[:5],
+        'phrases': _unique_preserve(phrase_candidates + COMMON_PHRASES)[:6],
+        'current_word': current_word,
+        'text': normalized_text,
+    }
 
 def _prepare_features(landmarks):
     arr = np.asarray(landmarks, dtype=np.float32).flatten()
     if arr.size == 0:
         raise ValueError('No landmarks provided')
-    if MODEL_FEATURES and arr.size != MODEL_FEATURES:
-        raise ValueError(f'Expected {MODEL_FEATURES} features, received {arr.size}')
-    return arr.reshape(1, -1)
+
+    features = prepare_model_features(model, arr)
+    if MODEL_FEATURES and features.shape[1] != MODEL_FEATURES:
+        raise ValueError(f'Expected {MODEL_FEATURES} model features, received {features.shape[1]}')
+    return features
 
 def _cache_key(landmarks):
     arr = np.asarray(landmarks, dtype=np.float32).flatten()
     return tuple(np.round(arr[:min(12, arr.size)], 3))
 
-def predict_landmarks_cached(landmarks):
+
+def _normalize_session_id(session_id):
+    if session_id is None:
+        return None
+    value = str(session_id).strip()
+    return value[:80] if value else None
+
+
+def _apply_temporal_consensus(session_id, result):
+    payload = dict(result)
+    payload.setdefault('temporal_hits', 0)
+    payload.setdefault('temporal_ratio', 0.0)
+    payload.setdefault('temporal_window', 0)
+    payload.setdefault('stable_prediction', '')
+    payload.setdefault('stable_confidence', 0.0)
+    payload.setdefault('temporal_accepted', False)
+
+    normalized_session_id = _normalize_session_id(session_id)
+    if not normalized_session_id:
+        payload['stable_prediction'] = payload.get('prediction', '')
+        payload['stable_confidence'] = float(payload.get('confidence', 0.0))
+        payload['temporal_accepted'] = bool(payload.get('prediction'))
+        return payload
+
+    with session_lock:
+        state = session_prediction_state.get(normalized_session_id)
+        if state is None:
+            state = {
+                'labels': deque(maxlen=TEMPORAL_WINDOW_SIZE),
+                'confidences': deque(maxlen=TEMPORAL_WINDOW_SIZE),
+                'misses': 0,
+            }
+            session_prediction_state[normalized_session_id] = state
+        else:
+            session_prediction_state.move_to_end(normalized_session_id)
+
+        while len(session_prediction_state) > SESSION_STATE_LIMIT:
+            session_prediction_state.popitem(last=False)
+
+        if payload.get('accepted') and payload.get('raw_prediction'):
+            state['labels'].append(payload['raw_prediction'])
+            state['confidences'].append(float(payload.get('confidence', 0.0)))
+            state['misses'] = 0
+        else:
+            state['misses'] += 1
+            if state['misses'] >= 2:
+                state['labels'].clear()
+                state['confidences'].clear()
+
+        labels = list(state['labels'])
+        if labels:
+            consensus_label, hits = Counter(labels).most_common(1)[0]
+            ratio = hits / len(labels)
+            matched_confidences = [
+                conf for label, conf in zip(state['labels'], state['confidences'])
+                if label == consensus_label
+            ]
+            stable_confidence = float(np.mean(matched_confidences)) if matched_confidences else 0.0
+            temporal_accepted = (
+                hits >= TEMPORAL_MIN_HITS
+                and ratio >= TEMPORAL_MIN_RATIO
+                and stable_confidence >= MIN_PREDICTION_CONFIDENCE
+            )
+        else:
+            consensus_label = ''
+            hits = 0
+            ratio = 0.0
+            stable_confidence = 0.0
+            temporal_accepted = False
+
+    payload['temporal_hits'] = hits
+    payload['temporal_ratio'] = float(ratio)
+    payload['temporal_window'] = len(labels)
+    payload['stable_prediction'] = consensus_label if temporal_accepted else ''
+    payload['stable_confidence'] = stable_confidence if temporal_accepted else 0.0
+    payload['temporal_accepted'] = temporal_accepted
+    payload['prediction'] = payload['stable_prediction']
+    return payload
+
+
+def predict_landmarks_cached(landmarks, session_id=None):
     """Run a fast cached prediction for one landmark vector."""
     if model is None:
         raise RuntimeError('Model not loaded')
@@ -125,25 +277,35 @@ def predict_landmarks_cached(landmarks):
         cached = prediction_cache.get(cache_key)
         if cached is not None:
             prediction_cache.move_to_end(cache_key)
-            return {**cached, 'cached': True}
+            return _apply_temporal_consensus(session_id, {**cached, 'cached': True})
 
     features = _prepare_features(landmarks)
     probabilities = model.predict_proba(features)[0]
     best_index = int(np.argmax(probabilities))
-    result = {
-        'prediction': str(model.classes_[best_index]),
-        'confidence': float(probabilities[best_index]),
+    sorted_indices = np.argsort(probabilities)[::-1]
+    best_confidence = float(probabilities[best_index])
+    second_confidence = float(probabilities[sorted_indices[1]]) if len(sorted_indices) > 1 else 0.0
+    confidence_margin = best_confidence - second_confidence
+    accepted = best_confidence >= MIN_PREDICTION_CONFIDENCE and confidence_margin >= MIN_PREDICTION_MARGIN
+
+    raw_result = {
+        'prediction': str(model.classes_[best_index]) if accepted else '',
+        'raw_prediction': str(model.classes_[best_index]),
+        'confidence': best_confidence,
+        'confidence_margin': float(confidence_margin),
+        'accepted': accepted,
+        'top_predictions': top_k_predictions(probabilities, model.classes_, k=3),
         'timestamp': datetime.now().isoformat(),
         'cached': False
     }
 
     with cache_lock:
-        prediction_cache[cache_key] = result
+        prediction_cache[cache_key] = raw_result
         prediction_cache.move_to_end(cache_key)
         while len(prediction_cache) > CACHE_LIMIT:
             prediction_cache.popitem(last=False)
 
-    return result
+    return _apply_temporal_consensus(session_id, raw_result)
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -152,7 +314,14 @@ def health_check():
         'status': 'healthy',
         'model_loaded': model is not None,
         'feature_count': MODEL_FEATURES,
+        'feature_mode': MODEL_FEATURE_MODE,
+        'min_confidence': MIN_PREDICTION_CONFIDENCE,
+        'min_margin': MIN_PREDICTION_MARGIN,
+        'temporal_window_size': TEMPORAL_WINDOW_SIZE,
+        'temporal_min_hits': TEMPORAL_MIN_HITS,
+        'temporal_min_ratio': TEMPORAL_MIN_RATIO,
         'cache_size': len(prediction_cache),
+        'active_sessions': len(session_prediction_state),
         'timestamp': datetime.now().isoformat()
     })
 
@@ -165,7 +334,8 @@ def predict():
         if not isinstance(landmarks, list) or not landmarks:
             return jsonify({'error': 'Invalid or missing landmarks'}), 400
 
-        result = predict_executor.submit(predict_landmarks_cached, landmarks).result()
+        session_id = data.get('sessionId') or request.headers.get('X-Session-Id') or request.remote_addr
+        result = predict_executor.submit(predict_landmarks_cached, landmarks, session_id).result()
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -201,10 +371,13 @@ def predict_words_endpoint():
     try:
         data = request.json
         current_text = data.get('text', '')
-        predictions = predict_words(current_text)
+        suggestions = predict_words(current_text)
         
         return jsonify({
-            'predictions': predictions,
+            'predictions': suggestions['words'],
+            'phrases': suggestions['phrases'],
+            'current_word': suggestions['current_word'],
+            'normalized_text': suggestions['text'],
             'timestamp': datetime.now().isoformat()
         })
     
@@ -389,7 +562,7 @@ def handle_asl_prediction(data):
             emit('error', {'message': 'Missing landmarks'})
             return
 
-        result = predict_landmarks_cached(landmarks)
+        result = predict_landmarks_cached(landmarks, getattr(request, 'sid', None))
         emit('prediction_result', result)
     except Exception as e:
         emit('error', {'message': str(e)})

@@ -15,7 +15,8 @@ from mediapipe import solutions
 import csv
 import os
 import time
-import numpy as np
+
+from asl_feature_utils import normalize_landmarks
 
 # Initialize MediaPipe Hands using the new API
 mp_hands = solutions.hands
@@ -33,23 +34,6 @@ hands = mp_hands.Hands(
 dataset_path = 'data/asl_dataset.csv'
 data_samples = []
 
-def normalize_landmarks(landmarks, handedness=None):
-    """Normalize landmarks and mirror left-hand samples into a common orientation."""
-    coords = np.array([[lm.x, lm.y] for lm in landmarks.landmark], dtype=np.float32)
-    wrist = coords[0]
-    normalized = coords - wrist
-
-    if handedness and str(handedness).lower().startswith('left'):
-        normalized[:, 0] *= -1
-
-    x_min, y_min = normalized.min(axis=0)
-    x_max, y_max = normalized.max(axis=0)
-    scale = max(x_max - x_min, y_max - y_min)
-
-    if scale > 0:
-        normalized = normalized / scale
-
-    return normalized.flatten()
 
 def save_dataset():
     """Save collected data to CSV file"""

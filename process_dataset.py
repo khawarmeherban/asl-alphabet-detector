@@ -11,10 +11,11 @@ How to use:
 
 import cv2
 import mediapipe as mp
-import numpy as np
 import pandas as pd
 import os
 from tqdm import tqdm
+
+from asl_feature_utils import normalize_landmarks
 
 # Initialize MediaPipe Hands using the tasks API
 BaseOptions = mp.tasks.BaseOptions
@@ -32,23 +33,6 @@ options = HandLandmarkerOptions(
     min_tracking_confidence=0.5
 )
 
-def normalize_landmarks(hand_landmarks_list, handedness=None):
-    """Normalize landmarks and mirror left-hand samples into a common orientation."""
-    coords = np.array([[lm.x, lm.y] for lm in hand_landmarks_list], dtype=np.float32)
-    wrist = coords[0]
-    normalized = coords - wrist
-
-    if handedness and str(handedness).lower().startswith('left'):
-        normalized[:, 0] *= -1
-
-    x_min, y_min = normalized.min(axis=0)
-    x_max, y_max = normalized.max(axis=0)
-    scale = max(x_max - x_min, y_max - y_min)
-
-    if scale > 0:
-        normalized = normalized / scale
-
-    return normalized.flatten()
 
 def process_dataset(dataset_root='data/asl_dataset'):
     """

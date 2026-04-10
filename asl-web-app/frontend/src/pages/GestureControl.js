@@ -867,7 +867,6 @@ function GestureControl() {
           <li>Hold gestures steady for 1-2 seconds for recognition</li>
           <li>Avoid cluttered backgrounds</li>
           <li>� YouTube videos play in background - you can control them with gestures!</li>
-          <li>📝 To add your own videos, replace video IDs in <code>YOUTUBE_PLAYLIST</code> array</li>
         </ul>
       </div>
     </div>

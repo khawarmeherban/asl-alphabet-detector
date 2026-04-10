@@ -15,6 +15,7 @@ function BidirectionalPage() {
   const [isListening, setIsListening] = useState(false);
   const [prediction, setPrediction] = useState('');
   const [confidence, setConfidence] = useState(0);
+  const [stability, setStability] = useState({ hits: 0, ratio: 0, ready: false });
   const recognitionRef = useRef(null);
   const handsRef = useRef(null);
   const cameraRef = useRef(null);
@@ -23,11 +24,13 @@ function BidirectionalPage() {
   const lastPredictionTime = useRef(0);
   const inFlightPrediction = useRef(false);
   const lastAcceptedPrediction = useRef({ label: '', at: 0 });
+  const sessionIdRef = useRef(`bidi-${Math.random().toString(36).slice(2, 10)}`);
   const PREDICTION_THROTTLE = 140;
-  const PREDICTION_BUFFER_SIZE = 7;
+  const PREDICTION_BUFFER_SIZE = 5;
   const MIN_CONFIDENCE = 0.7;
-  const REQUIRED_STABLE_HITS = 4;
-  const LETTER_COOLDOWN_MS = 900;
+  const MIN_MARGIN = 0.08;
+  const REQUIRED_STABLE_HITS = 2;
+  const LETTER_COOLDOWN_MS = 1100;
 
   useEffect(() => {
     // Initialize speech recognition
@@ -143,19 +146,39 @@ function BidirectionalPage() {
       try {
         inFlightPrediction.current = true;
         const response = await axios.post(`${API_URL}/predict`, {
-          landmarks: normalizedLandmarks
+          landmarks: normalizedLandmarks,
+          sessionId: sessionIdRef.current
         });
         
-        const { prediction: pred, confidence: conf } = response.data;
-        setConfidence(conf || 0);
+        const {
+          prediction: pred,
+          raw_prediction: rawPred = '',
+          confidence: conf,
+          stable_confidence: stableConf = conf,
+          confidence_margin: margin = 1,
+          accepted = true,
+          temporal_hits: temporalHits = 0,
+          temporal_ratio: temporalRatio = 0,
+          temporal_accepted: temporalAccepted = false
+        } = response.data;
+        setConfidence(temporalAccepted ? (stableConf || conf || 0) : (conf || 0));
+        setStability({ hits: temporalHits, ratio: temporalRatio, ready: temporalAccepted });
 
-        if (!pred || conf < MIN_CONFIDENCE) {
+        if (!accepted || !rawPred || conf < MIN_CONFIDENCE || margin < MIN_MARGIN) {
           predictionBuffer.current = [];
           stableCount.current = 0;
+          setPrediction('');
           return;
         }
 
-        predictionBuffer.current.push({ label: pred, confidence: conf });
+        if (!temporalAccepted || !pred) {
+          predictionBuffer.current = [];
+          stableCount.current = 0;
+          setPrediction(rawPred);
+          return;
+        }
+
+        predictionBuffer.current.push({ label: pred, confidence: stableConf || conf });
         if (predictionBuffer.current.length > PREDICTION_BUFFER_SIZE) {
           predictionBuffer.current.shift();
         }
@@ -167,7 +190,7 @@ function BidirectionalPage() {
 
         setPrediction(mostCommon);
         setConfidence(averagedConfidence);
-        stableCount.current = matches.length;
+        stableCount.current = Math.max(matches.length, temporalHits);
         
         if (stableCount.current >= REQUIRED_STABLE_HITS) {
           const isDuplicate =
@@ -187,6 +210,12 @@ function BidirectionalPage() {
       } finally {
         inFlightPrediction.current = false;
       }
+    } else {
+      predictionBuffer.current = [];
+      stableCount.current = 0;
+      setPrediction('');
+      setConfidence(0);
+      setStability({ hits: 0, ratio: 0, ready: false });
     }
     
     ctx.restore();
@@ -338,6 +367,13 @@ function BidirectionalPage() {
                         className="confidence-fill" 
                         style={{ width: `${confidence * 100}%` }}
                       />
+                    </div>
+                    <div className="text-xs mt-1 text-slate-600">
+                      {stability.ready
+                        ? `Stable across ${stability.hits} frames`
+                        : prediction
+                          ? `Stabilizing… ${Math.round((stability.ratio || 0) * 100)}%`
+                          : 'Waiting for a clear sign'}
                     </div>
                   </div>
                 )}

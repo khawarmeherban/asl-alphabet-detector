@@ -4,6 +4,16 @@ import { Hands } from '@mediapipe/hands';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:7860';
+const QUICK_PHRASES = [
+  'Hello',
+  'How are you?',
+  'I need help',
+  'Please wait',
+  'Thank you',
+  'I need water',
+  'Yes, please',
+  'No, thank you'
+];
 
 function LiveDetection() {
   const videoRef = useRef(null);
@@ -13,6 +23,7 @@ function LiveDetection() {
   const [translatedText, setTranslatedText] = useState('');
   const [isDetecting, setIsDetecting] = useState(false);
   const [wordSuggestions, setWordSuggestions] = useState([]);
+  const [phraseSuggestions, setPhraseSuggestions] = useState(() => QUICK_PHRASES.slice(0, 4));
   
   // ========================================
   // TEXT-TO-SPEECH Feature:
@@ -38,6 +49,7 @@ function LiveDetection() {
   const [builtSentence, setBuiltSentence] = useState('');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [error, setError] = useState(null);
+  const [stability, setStability] = useState({ hits: 0, ratio: 0, ready: false });
   const handsRef = useRef(null);
   const cameraRef = useRef(null);
   const isActiveRef = useRef(false);
@@ -46,11 +58,13 @@ function LiveDetection() {
   const lastPredictionTime = useRef(0);
   const inFlightPrediction = useRef(false);
   const lastAcceptedPrediction = useRef({ label: '', at: 0 });
+  const sessionIdRef = useRef(`live-${Math.random().toString(36).slice(2, 10)}`);
   const PREDICTION_THROTTLE = 140; // ms
-  const PREDICTION_BUFFER_SIZE = 7;
+  const PREDICTION_BUFFER_SIZE = 5;
   const MIN_CONFIDENCE = 0.7;
-  const REQUIRED_STABLE_HITS = 4;
-  const LETTER_COOLDOWN_MS = 900;
+  const MIN_MARGIN = 0.08;
+  const REQUIRED_STABLE_HITS = 2;
+  const LETTER_COOLDOWN_MS = 1100;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -279,19 +293,39 @@ function LiveDetection() {
       try {
         inFlightPrediction.current = true;
         const response = await axios.post(`${API_URL}/predict`, {
-          landmarks: normalizedLandmarks
+          landmarks: normalizedLandmarks,
+          sessionId: sessionIdRef.current
         });
         
-        const { prediction: pred, confidence: conf } = response.data;
-        setConfidence(conf || 0);
+        const {
+          prediction: pred,
+          raw_prediction: rawPred = '',
+          confidence: conf,
+          stable_confidence: stableConf = conf,
+          confidence_margin: margin = 1,
+          accepted = true,
+          temporal_hits: temporalHits = 0,
+          temporal_ratio: temporalRatio = 0,
+          temporal_accepted: temporalAccepted = false
+        } = response.data;
+        setConfidence(temporalAccepted ? (stableConf || conf || 0) : (conf || 0));
+        setStability({ hits: temporalHits, ratio: temporalRatio, ready: temporalAccepted });
 
-        if (!pred || conf < MIN_CONFIDENCE) {
+        if (!accepted || !rawPred || conf < MIN_CONFIDENCE || margin < MIN_MARGIN) {
           predictionBuffer.current = [];
           stableCount.current = 0;
+          setPrediction('');
+          return;
+        }
+
+        if (!temporalAccepted || !pred) {
+          predictionBuffer.current = [];
+          stableCount.current = 0;
+          setPrediction(rawPred);
           return;
         }
         
-        predictionBuffer.current.push({ label: pred, confidence: conf });
+        predictionBuffer.current.push({ label: pred, confidence: stableConf || conf });
         if (predictionBuffer.current.length > PREDICTION_BUFFER_SIZE) {
           predictionBuffer.current.shift();
         }
@@ -303,7 +337,7 @@ function LiveDetection() {
 
         setPrediction(mostCommon);
         setConfidence(averagedConfidence);
-        stableCount.current = matches.length;
+        stableCount.current = Math.max(matches.length, temporalHits);
         
         if (stableCount.current >= REQUIRED_STABLE_HITS) {
           const isDuplicate =
@@ -335,6 +369,12 @@ function LiveDetection() {
       } finally {
         inFlightPrediction.current = false;
       }
+    } else {
+      predictionBuffer.current = [];
+      stableCount.current = 0;
+      setPrediction('');
+      setConfidence(0);
+      setStability({ hits: 0, ratio: 0, ready: false });
     }
     
     ctx.restore();
@@ -412,11 +452,21 @@ function LiveDetection() {
   };
 
   const fetchWordSuggestions = async (text) => {
+    const normalizedText = String(text || '').trim();
+
+    if (!normalizedText) {
+      setWordSuggestions([]);
+      setPhraseSuggestions(QUICK_PHRASES.slice(0, 4));
+      return;
+    }
+
     try {
-      const response = await axios.post(`${API_URL}/predict-words`, { text });
-      setWordSuggestions(response.data.predictions);
+      const response = await axios.post(`${API_URL}/predict-words`, { text: normalizedText });
+      setWordSuggestions(response.data.predictions || []);
+      setPhraseSuggestions(response.data.phrases || QUICK_PHRASES.slice(0, 4));
     } catch (error) {
       console.error('Word prediction error:', error);
+      setPhraseSuggestions(QUICK_PHRASES.slice(0, 4));
     }
   };
 
@@ -484,9 +534,12 @@ function LiveDetection() {
   };
 
   const handleSaveToHistory = async () => {
+    const textToSave = (builtSentence || translatedText).trim();
+    if (!textToSave) return;
+
     try {
       await axios.post(`${API_URL}/history`, {
-        text: translatedText,
+        text: textToSave,
         speaker: 'User',
         mode: 'ASL'
       });
@@ -504,11 +557,22 @@ function LiveDetection() {
       const next = `${word} `;
       setTranslatedText(next);
       setBuiltSentence(next);
+      fetchWordSuggestions(next);
       return;
     }
 
     parts[parts.length - 1] = word;
     const next = `${parts.join(' ')} `;
+    setTranslatedText(next);
+    setBuiltSentence(next);
+    fetchWordSuggestions(next);
+  };
+
+  const applyPhrase = (phrase) => {
+    const cleanedPhrase = String(phrase || '').trim();
+    if (!cleanedPhrase) return;
+
+    const next = `${cleanedPhrase}${/[.!?]$/.test(cleanedPhrase) ? '' : ''} `;
     setTranslatedText(next);
     setBuiltSentence(next);
     fetchWordSuggestions(next);
@@ -523,8 +587,11 @@ function LiveDetection() {
   // How it works: Add a space character to the sentence (like pressing spacebar)
   // This separates words: "HELLO" + SPACE = "HELLO "
   const handleAddSpace = () => {
-    setBuiltSentence(prev => (prev.endsWith(' ') || !prev ? prev : `${prev} `));
-    setTranslatedText(prev => (prev.endsWith(' ') || !prev ? prev : `${prev} `));
+    const currentText = builtSentence || translatedText;
+    const next = currentText.endsWith(' ') || !currentText ? currentText : `${currentText} `;
+    setBuiltSentence(next);
+    setTranslatedText(next);
+    fetchWordSuggestions(next);
   };
   
   // BACKSPACE Function:
@@ -532,14 +599,20 @@ function LiveDetection() {
   // Example: "HELLO" -> Backspace -> "HELL"
   // Uses .slice(0, -1) which means "take all characters except the last one"
   const handleBackspace = () => {
-    setBuiltSentence(prev => prev.slice(0, -1));
-    setTranslatedText(prev => prev.slice(0, -1));
+    const currentText = builtSentence || translatedText;
+    const next = currentText.slice(0, -1);
+    setBuiltSentence(next);
+    setTranslatedText(next);
+    fetchWordSuggestions(next);
   };
 
   const handleDeleteLastWord = () => {
     const removeLastWord = (text) => text.replace(/\s*\S+\s*$/, '').replace(/\s+$/, ' ');
-    setBuiltSentence(prev => removeLastWord(prev).trimStart());
-    setTranslatedText(prev => removeLastWord(prev).trimStart());
+    const currentText = builtSentence || translatedText;
+    const next = removeLastWord(currentText).trimStart();
+    setBuiltSentence(next);
+    setTranslatedText(next);
+    fetchWordSuggestions(next);
   };
   
   // CLEAR TEXT Function:
@@ -562,6 +635,7 @@ function LiveDetection() {
     setPrediction('');
     setConfidence(0);
     setWordSuggestions([]);
+    setPhraseSuggestions(QUICK_PHRASES.slice(0, 4));
   };
   
   // ADD DETECTED LETTER to Word Builder:
@@ -584,19 +658,36 @@ function LiveDetection() {
   const getSmartSuggestions = () => {
     const currentText = (builtSentence || translatedText).trim().toLowerCase();
     const currentWord = currentText.split(/\s+/).pop() || '';
-    const fallback = ['hello', 'help', 'thank you', 'yes', 'no'];
+    const fallback = ['hello', 'help', 'thank', 'yes', 'no'];
 
     const combined = [...wordSuggestions, ...fallback].filter(Boolean);
-    const unique = [...new Set(combined)];
+    const unique = [...new Set(combined.map(item => item.toLowerCase()))];
 
     if (!currentWord) return unique.slice(0, 5);
     return unique
       .sort((a, b) => {
-        const aStarts = a.toLowerCase().startsWith(currentWord) ? 0 : 1;
-        const bStarts = b.toLowerCase().startsWith(currentWord) ? 0 : 1;
+        const aStarts = a.startsWith(currentWord) ? 0 : 1;
+        const bStarts = b.startsWith(currentWord) ? 0 : 1;
         return aStarts - bStarts || a.length - b.length;
       })
       .slice(0, 5);
+  };
+
+  const getSmartPhraseSuggestions = () => {
+    const currentText = (builtSentence || translatedText).trim().toLowerCase();
+    const combined = [...phraseSuggestions, ...QUICK_PHRASES].filter(Boolean);
+    const unique = [...new Set(combined.map(item => item.trim()))];
+
+    if (!currentText) return unique.slice(0, 6);
+    return unique
+      .sort((a, b) => {
+        const aLower = a.toLowerCase();
+        const bLower = b.toLowerCase();
+        const aRank = aLower.startsWith(currentText) ? 0 : aLower.includes(currentText) ? 1 : 2;
+        const bRank = bLower.startsWith(currentText) ? 0 : bLower.includes(currentText) ? 1 : 2;
+        return aRank - bRank || a.length - b.length;
+      })
+      .slice(0, 6);
   };
 
   return (
@@ -769,14 +860,25 @@ function LiveDetection() {
                   </div>
                   
                   {/* Confidence level text */}
-                  <div className="text-center mt-1 text-sm font-semibold">
-                    {confidence >= 0.8 ? (
-                      <span className="text-green-600">✓ High Confidence - Very Accurate!</span>
-                    ) : confidence >= 0.5 ? (
-                      <span className="text-yellow-600">⚠ Medium Confidence - Fairly Accurate</span>
-                    ) : (
-                      <span className="text-red-600">✗ Low Confidence - May Not Be Accurate</span>
-                    )}
+                  <div className="text-center mt-1 text-sm font-semibold space-y-1">
+                    <div>
+                      {confidence >= 0.8 ? (
+                        <span className="text-green-600">✓ High Confidence - Very Accurate!</span>
+                      ) : confidence >= 0.5 ? (
+                        <span className="text-yellow-600">⚠ Medium Confidence - Fairly Accurate</span>
+                      ) : (
+                        <span className="text-red-600">✗ Low Confidence - May Not Be Accurate</span>
+                      )}
+                    </div>
+                    <div>
+                      {stability.ready ? (
+                        <span className="text-emerald-700">🧠 Stable across {stability.hits} frames</span>
+                      ) : prediction ? (
+                        <span className="text-blue-600">⏳ Stabilizing... {Math.round((stability.ratio || 0) * 100)}%</span>
+                      ) : (
+                        <span className="text-slate-500">Show a clear sign and hold briefly</span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -864,9 +966,27 @@ function LiveDetection() {
                   <button
                     key={`${word}-${index}`}
                     onClick={() => applySuggestion(word)}
-                    className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors"
+                    className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors capitalize"
                   >
                     {word}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {getSmartPhraseSuggestions().length > 0 && (
+            <div className="card bg-emerald-50 border border-emerald-200">
+              <h3 className="text-xl font-semibold mb-3 text-emerald-900">⚡ Quick Phrases & Sentence Starters</h3>
+              <p className="text-sm text-slate-600 mb-3">Tap a phrase to fill the sentence instantly and speed up communication.</p>
+              <div className="flex flex-wrap gap-2">
+                {getSmartPhraseSuggestions().map((phrase, index) => (
+                  <button
+                    key={`${phrase}-${index}`}
+                    onClick={() => applyPhrase(phrase)}
+                    className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg transition-colors"
+                  >
+                    {phrase}
                   </button>
                 ))}
               </div>

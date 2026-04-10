@@ -32,6 +32,13 @@ import pickle
 import os
 from collections import Counter, deque
 
+from asl_feature_utils import (
+    FEATURE_MODE_ENGINEERED,
+    extract_engineered_features,
+    normalize_landmarks,
+    prepare_model_features,
+)
+
 # Initialize MediaPipe Hands using the tasks API
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
@@ -48,26 +55,9 @@ HAND_CONNECTIONS = frozenset([
     (5, 9), (9, 13), (13, 17)  # Palm
 ])
 
-def normalize_landmarks(hand_landmarks_list, handedness=None):
-    """Normalize landmarks and mirror left-hand samples into a common orientation."""
-    coords = np.array([[lm.x, lm.y] for lm in hand_landmarks_list], dtype=np.float32)
-    wrist = coords[0]
-    normalized = coords - wrist
-
-    if handedness and str(handedness).lower().startswith('left'):
-        normalized[:, 0] *= -1
-
-    x_min, y_min = normalized.min(axis=0)
-    x_max, y_max = normalized.max(axis=0)
-    scale = max(x_max - x_min, y_max - y_min)
-
-    if scale > 0:
-        normalized = normalized / scale
-
-    return normalized.flatten()
 
 def rebalance_training_data(X, y, random_state=42):
-    """Lightly oversample underrepresented classes with small landmark jitter."""
+    """Lightly oversample underrepresented classes with small feature jitter."""
     rng = np.random.default_rng(random_state)
     counts = Counter(y)
     target_count = max(40, int(np.median(list(counts.values()))))
@@ -87,6 +77,20 @@ def rebalance_training_data(X, y, random_state=42):
 
     return np.vstack(x_parts), np.concatenate(y_parts)
 
+def print_top_confusions(y_true, y_pred, max_rows=8):
+    """Print the most frequent label confusions to guide additional data collection."""
+    confusion_counts = Counter()
+    for truth, pred in zip(y_true, y_pred):
+        if truth != pred:
+            confusion_counts[(truth, pred)] += 1
+
+    if not confusion_counts:
+        print("[OK] No misclassifications on the validation split.")
+        return
+
+    print("\nTop confusion pairs:")
+    for (truth, pred), count in confusion_counts.most_common(max_rows):
+        print(f"  - {truth} -> {pred}: {count} samples")
 def load_and_train_model(dataset_path='data/asl_dataset.csv'):
     """
     Load dataset and train a classifier
@@ -120,8 +124,11 @@ def load_and_train_model(dataset_path='data/asl_dataset.csv'):
         print("\n[!] Warning: Very few samples! Collect more data for better accuracy.")
     
     # Prepare features (X) and labels (y)
-    X = df.drop('label', axis=1).astype(np.float32).values
+    raw_landmarks = df.drop('label', axis=1).astype(np.float32).values
+    X = np.vstack([extract_engineered_features(row) for row in raw_landmarks])
     y = df['label'].astype(str).to_numpy()
+
+    print(f"[OK] Engineered feature vector size: {X.shape[1]}")
     
     # Split data into training and testing sets
     X_train, X_test, y_train, y_test = train_test_split(
@@ -183,6 +190,12 @@ def load_and_train_model(dataset_path='data/asl_dataset.csv'):
 
     print("\nDetailed Classification Report:")
     print(classification_report(y_test, y_pred, zero_division=0))
+    print_top_confusions(y_test, y_pred)
+
+    model.asl_feature_mode = FEATURE_MODE_ENGINEERED
+    model.asl_landmark_input_size = 42
+    model.asl_engineered_feature_count = int(X.shape[1])
+    model.asl_best_model_name = best_name
 
     model_path = 'data/asl_model.pkl'
     with open(model_path, 'wb') as f:
@@ -297,7 +310,7 @@ def run_inference(model):
                 if getattr(detection_result, 'handedness', None):
                     handedness = detection_result.handedness[0][0].category_name
                 normalized_landmarks = normalize_landmarks(hand_landmarks, handedness)
-                features = normalized_landmarks.reshape(1, -1)
+                features = prepare_model_features(model, normalized_landmarks)
                 pred_probs = model.predict_proba(features)[0]
                 pred_idx = np.argmax(pred_probs)
                 confidence = pred_probs[pred_idx]
