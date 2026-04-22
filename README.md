@@ -1,27 +1,85 @@
-# AlphaHand
+# AlphaHand — Production-ready ASL Workspace
 
-AlphaHand upgrades the existing ASL alphabet detector into a broader communication tool for Deaf and Hearing users. The current repo includes the original Python model pipeline plus the upgraded React web app.
+AlphaHand is a real-time ASL (American Sign Language) alphabet detector and communication workspace. This repository contains:
 
-## What’s Included
+- A Flask backend that serves an ML classifier for hand landmark features and provides prediction, health, and gesture endpoints.
+- A React frontend (`asl-web-app/frontend`) that runs MediaPipe Hands in the browser, debounces predictions, and provides a demo workspace with practice, suggestions, TTS, and gesture-controlled media.
+- Python utilities for dataset processing and model training (kept for reference and local development).
 
-- ASL alphabet detection with MediaPipe landmark extraction
-- Live communication workspace in `asl-web-app/frontend`
-- Gemini-assisted autocomplete and Roman Urdu translation
-- Browser speech synthesis and speech recognition helpers
-- Practice mode and reverse text-to-sign playback
-- Existing Python utilities for dataset processing, training, and local inference
+This README consolidates the key project details and the most important developer and deployment tasks.
 
-## Web App
+## Key Features
 
-The main web experience lives in [asl-web-app/README.md](asl-web-app/README.md).
+- Real-time ASL alphabet detection with MediaPipe hand tracking and confidence overlays
+- Stable-letter confirmation (1–1.5s hold / temporal consensus) to avoid flicker
+- Live word builder with on-device fallback suggestions and optional Gemini autocomplete
+- Dual-hand interaction: secondary hand can trigger `SPACE`, `CLEAR`, and `SPEAK` actions
+- Practice mode with randomized challenges, scoring, and streaks
+- Reverse mode for text → sign playback (ASL card renderer)
+- Browser Text-to-Speech and optional speech recognition helpers
 
-## Python Utilities
+## Important Files
 
-- `process_dataset.py`: dataset preprocessing
-- `inference_classifier.py`: model training and local inference
-- `asl_translator.py`: ASL to text and speech utility
-- `asl_bidirectional.py`: bidirectional desktop prototype
+- `asl-web-app/backend/app.py` — Flask backend and WebSocket handlers (prediction endpoints)
+- `asl-web-app/backend/asl_feature_utils.py` — feature engineering and model helpers
+- `asl-web-app/frontend/src/features/liveDetection/useLiveDetectionEngine.js` — MediaPipe integration and prediction adapter
+- `inference_classifier.py` — training and local inference script (reference)
 
-## Current Architecture Note
+## Local Development
 
-The upgraded frontend is modular and browser-heavy, but the sign prediction path still points to the existing `/predict` API because there is no TF.js model artifact committed in this repo yet. The UI adapter is isolated so a browser-only model can replace it later without redesigning the interface.
+1. Backend (Python)
+
+```bash
+cd asl-web-app/backend
+python -m venv .venv   # optional: create virtualenv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+python app.py
+```
+
+The backend listens on port `7860` by default. Use `/health` to verify model load and status.
+
+2. Frontend (React)
+
+```bash
+cd asl-web-app/frontend
+npm install
+npm start
+```
+
+Set `REACT_APP_API_URL` to point to the backend (e.g., `http://localhost:7860`) in your environment or in a local `.env`.
+
+## Deployment Notes
+
+- Frontend: Netlify is used in production. Build with `npm run build` and configure Netlify to serve files from `asl-web-app/frontend/build`.
+- Backend: Hugging Face Spaces (Docker) or a standard host. Ensure the trained model `asl_model.pkl` is present in the backend working directory or configure `ASL_MODEL_PATH`.
+- Important: If the backend cannot find the model, `/predict` and `/predict/batch` now return `503` and `/health` reports `model_loaded: false`.
+
+## Cleanup & Repository Hygiene
+
+- The repo should not include local virtual environments or build artifacts. Consider adding these to `.gitignore`:
+
+```
+.venv/
+asl-web-app/frontend/build/
+__pycache__/
+.DS_Store
+node_modules/
+.env
+.env.local
+.sixth/
+```
+
+I will remove obvious generated artifacts (build output, bytecode caches) and consolidate docs into this README unless you prefer separate docs.
+
+## Troubleshooting
+
+- If `/predict` returns 503, the model file is missing or failed to load — check backend logs and ensure `asl_model.pkl` exists.
+- If MediaPipe causes main-thread jank, ensure the frontend is using the non-blocking send pattern and the model server is healthy.
+
+## Next Steps I Took
+
+- Hardened backend inference by offloading `model.predict_proba` to a thread pool and added a configurable timeout.
+- Made MediaPipe frame handling non-blocking in the frontend hook to reduce UI jank.
+
+For deployment pushes or PRs, tell me whether to push directly to `main` or create a feature branch and PR.

@@ -115,6 +115,7 @@ export function useLiveDetectionEngine({
   const lastPredictionAtRef = useRef(0);
   const lastLightingAtRef = useRef(0);
   const requestInFlightRef = useRef(false);
+  const processingFrameRef = useRef(false);
   const controlGestureRef = useRef({ action: '', hits: 0, lastAcceptedAt: 0 });
   const sessionIdRef = useRef(`alphahand-${Math.random().toString(36).slice(2, 10)}`);
   const handRoleRef = useRef({
@@ -422,6 +423,9 @@ export function useLiveDetectionEngine({
       return;
     }
 
+    // Mark frame processing complete when entering handler
+    processingFrameRef.current = false;
+
     const video = videoRef.current;
     const overlay = overlayRef.current;
     if (!video || !overlay) {
@@ -552,7 +556,15 @@ export function useLiveDetectionEngine({
         ) {
           lastFrameAtRef.current = now;
           try {
-            await handsRef.current.send({ image: videoRef.current });
+            // Avoid awaiting MediaPipe send on the main loop to prevent jank.
+            // Use a processing flag to avoid piling up frames.
+            if (!processingFrameRef.current) {
+              processingFrameRef.current = true;
+              handsRef.current.send({ image: videoRef.current }).catch((err) => {
+                console.error('MediaPipe send failed (async):', err);
+                processingFrameRef.current = false;
+              });
+            }
           } catch (frameError) {
             console.error('MediaPipe frame processing failed.', frameError);
           }

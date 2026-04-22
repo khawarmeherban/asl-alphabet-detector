@@ -24,6 +24,7 @@ wheels/
 venv/
 ENV/
 env/
+\.venv/
 
 # IDEs
 .vscode/
@@ -42,6 +43,12 @@ data/asl_model.pkl
 
 # Dataset Images (too large for GitHub)
 data/asl_dataset/
+
+# Frontend build artifacts
+asl-web-app/frontend/build/
+
+# Local sixth/skill folders
+.sixth/
 
 # OS
 .DS_Store

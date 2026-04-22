@@ -4,8 +4,8 @@ Serves ML model predictions and handles real-time communication.
 """
 
 from collections import Counter, OrderedDict, deque
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import hashlib
 import os
 import pickle
 import sys
@@ -22,6 +22,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
 from asl_feature_utils import prepare_model_features, top_k_predictions
+import concurrent.futures
 
 PORT = int(os.getenv('PORT', '7860'))
 CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
@@ -32,11 +33,15 @@ TEMPORAL_WINDOW_SIZE = int(os.getenv('TEMPORAL_WINDOW_SIZE', '6'))
 TEMPORAL_MIN_HITS = int(os.getenv('TEMPORAL_MIN_HITS', '4'))
 TEMPORAL_MIN_RATIO = float(os.getenv('TEMPORAL_MIN_RATIO', '0.65'))
 SESSION_STATE_LIMIT = int(os.getenv('SESSION_STATE_LIMIT', '256'))
+PREDICT_WORKERS = int(os.getenv('PREDICT_WORKERS', '2'))
+PREDICT_TIMEOUT = float(os.getenv('PREDICT_TIMEOUT', '3.0'))
 
 app = Flask(__name__)
 CORS(app, origins=CORS_ORIGINS)
 socketio = SocketIO(app, cors_allowed_origins=CORS_ORIGINS, async_mode=SOCKETIO_ASYNC_MODE)
-predict_executor = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2))
+
+# Executor for offloading model inference so request threads are not blocked
+prediction_executor = concurrent.futures.ThreadPoolExecutor(max_workers=PREDICT_WORKERS)
 
 @app.route("/", methods=["GET"])
 def root():
@@ -185,7 +190,12 @@ def _prepare_features(landmarks):
 
 def _cache_key(landmarks):
     arr = np.asarray(landmarks, dtype=np.float32).flatten()
-    return tuple(np.round(arr[:min(12, arr.size)], 3))
+    if arr.size == 0:
+        return 'empty'
+
+    rounded = np.round(arr, 4).astype(np.float32, copy=False)
+    digest = hashlib.blake2b(rounded.tobytes(), digest_size=16).hexdigest()
+    return f'{arr.size}:{digest}'
 
 
 def _normalize_session_id(session_id):
@@ -280,7 +290,13 @@ def predict_landmarks_cached(landmarks, session_id=None):
             return _apply_temporal_consensus(session_id, {**cached, 'cached': True})
 
     features = _prepare_features(landmarks)
-    probabilities = model.predict_proba(features)[0]
+    try:
+        future = prediction_executor.submit(model.predict_proba, features)
+        probabilities = future.result(timeout=PREDICT_TIMEOUT)[0]
+    except concurrent.futures.TimeoutError:
+        raise RuntimeError('Model prediction timed out')
+    except Exception as e:
+        raise RuntimeError(f'Model prediction failed: {e}')
     best_index = int(np.argmax(probabilities))
     sorted_indices = np.argsort(probabilities)[::-1]
     best_confidence = float(probabilities[best_index])
@@ -330,12 +346,14 @@ def predict():
     """Predict one ASL sign from landmarks."""
     try:
         data = request.get_json(silent=True) or {}
+        if model is None:
+            return jsonify({'error': 'Model not loaded'}), 503
         landmarks = data.get('landmarks')
         if not isinstance(landmarks, list) or not landmarks:
             return jsonify({'error': 'Invalid or missing landmarks'}), 400
 
         session_id = data.get('sessionId') or request.headers.get('X-Session-Id') or request.remote_addr
-        result = predict_executor.submit(predict_landmarks_cached, landmarks, session_id).result()
+        result = predict_landmarks_cached(landmarks, session_id)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -344,6 +362,8 @@ def predict():
 def predict_batch():
     """Predict multiple landmark sets in one request."""
     try:
+        if model is None:
+            return jsonify({'error': 'Model not loaded'}), 503
         data = request.get_json(silent=True) or {}
         samples = data.get('samples') or data.get('items') or []
         if not isinstance(samples, list) or not samples:
