@@ -1,48 +1,46 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
 import { Trash2, Volume2, Clock, User } from 'lucide-react';
-
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+import { clearConversationHistory, fetchConversationHistory } from '../services/firebaseSync';
 
 function HistoryPage() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('all'); // all, asl, voice
+  const [filter, setFilter] = useState('all');
 
   useEffect(() => {
     fetchHistory();
   }, []);
 
   const fetchHistory = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/history`);
-      setHistory(response.data.history);
-      setLoading(false);
-    } catch (error) {
-      console.error('Failed to fetch history:', error);
-      setLoading(false);
-    }
+    setLoading(true);
+    const remoteHistory = await fetchConversationHistory();
+    setHistory(remoteHistory);
+    setLoading(false);
   };
 
   const clearHistory = async () => {
-    if (window.confirm('Are you sure you want to clear all history?')) {
-      try {
-        await axios.delete(`${API_URL}/history`);
-        setHistory([]);
-        alert('History cleared successfully!');
-      } catch (error) {
-        console.error('Failed to clear history:', error);
-        alert('Failed to clear history');
-      }
+    if (!window.confirm('Are you sure you want to clear all synced history?')) {
+      return;
+    }
+
+    const cleared = await clearConversationHistory();
+    if (cleared) {
+      setHistory([]);
+      window.alert('Firebase history cleared successfully.');
+    } else {
+      window.alert('Failed to clear Firebase history. Check Firestore rules.');
     }
   };
 
-  const speakText = async (text) => {
-    try {
-      await axios.post(`${API_URL}/speak`, { text });
-    } catch (error) {
-      console.error('TTS error:', error);
+  const speakText = (text) => {
+    if (!('speechSynthesis' in window)) {
+      window.alert('Speech synthesis is not available in this browser.');
+      return;
     }
+
+    const utterance = new SpeechSynthesisUtterance(String(text || ''));
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
   };
 
   const formatTimestamp = (timestamp) => {
@@ -55,7 +53,7 @@ function HistoryPage() {
     });
   };
 
-  const filteredHistory = history.filter(item => {
+  const filteredHistory = history.filter((item) => {
     if (filter === 'all') return true;
     if (filter === 'asl') return item.mode === 'ASL';
     if (filter === 'voice') return item.mode === 'Voice';
@@ -64,8 +62,8 @@ function HistoryPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-white text-2xl">Loading history...</div>
+      <div className="flex min-h-[400px] items-center justify-center">
+        <div className="text-2xl text-white">Loading Firebase history...</div>
       </div>
     );
   }
@@ -73,17 +71,17 @@ function HistoryPage() {
   return (
     <div className="space-y-6">
       <div className="card">
-        <div className="flex items-center justify-between mb-6">
+        <div className="mb-6 flex items-center justify-between">
           <div>
             <h2 className="text-3xl font-bold text-gray-800">Conversation History</h2>
-            <p className="text-gray-600 mt-1">
-              {history.length} {history.length === 1 ? 'message' : 'messages'} recorded
+            <p className="mt-1 text-gray-600">
+              {history.length} {history.length === 1 ? 'message' : 'messages'} synced
             </p>
           </div>
           {history.length > 0 && (
             <button
               onClick={clearHistory}
-              className="bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-lg font-semibold transition-all flex items-center space-x-2"
+              className="flex items-center space-x-2 rounded-lg bg-red-500 px-6 py-3 font-semibold text-white transition-all hover:bg-red-600"
             >
               <Trash2 size={20} />
               <span>Clear All</span>
@@ -91,89 +89,75 @@ function HistoryPage() {
           )}
         </div>
 
-        {/* Filters */}
         {history.length > 0 && (
-          <div className="flex space-x-3 mb-6">
+          <div className="mb-6 flex space-x-3">
             <button
               onClick={() => setFilter('all')}
-              className={`px-6 py-2 rounded-lg font-semibold transition-all ${
-                filter === 'all'
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              className={`rounded-lg px-6 py-2 font-semibold transition-all ${
+                filter === 'all' ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
               All ({history.length})
             </button>
             <button
               onClick={() => setFilter('asl')}
-              className={`px-6 py-2 rounded-lg font-semibold transition-all ${
-                filter === 'asl'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              className={`rounded-lg px-6 py-2 font-semibold transition-all ${
+                filter === 'asl' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
-              🤟 ASL ({history.filter(h => h.mode === 'ASL').length})
+              ASL ({history.filter((item) => item.mode === 'ASL').length})
             </button>
             <button
               onClick={() => setFilter('voice')}
-              className={`px-6 py-2 rounded-lg font-semibold transition-all ${
-                filter === 'voice'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              className={`rounded-lg px-6 py-2 font-semibold transition-all ${
+                filter === 'voice' ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
               }`}
             >
-              🎤 Voice ({history.filter(h => h.mode === 'Voice').length})
+              Voice ({history.filter((item) => item.mode === 'Voice').length})
             </button>
           </div>
         )}
 
-        {/* History List */}
         {filteredHistory.length === 0 ? (
-          <div className="text-center py-12">
-            <div className="text-6xl mb-4">💬</div>
-            <h3 className="text-2xl font-bold text-gray-700 mb-2">No Messages Yet</h3>
+          <div className="py-12 text-center">
+            <div className="mb-4 text-6xl">💬</div>
+            <h3 className="mb-2 text-2xl font-bold text-gray-700">No Messages Yet</h3>
             <p className="text-gray-500">
-              {filter === 'all'
-                ? 'Start communicating to see your history here!'
-                : `No ${filter} messages found. Try a different filter.`}
+              {filter === 'all' ? 'Start communicating to see synced history here.' : `No ${filter} messages found.`}
             </p>
           </div>
         ) : (
           <div className="space-y-4">
-            {filteredHistory.map((item, index) => (
+            {filteredHistory.map((item) => (
               <div
-                key={index}
-                className={`card ${
+                key={item.id || `${item.timestamp}-${item.text}`}
+                className={`card transition-shadow hover:shadow-lg ${
                   item.mode === 'ASL' ? 'bg-blue-50' : 'bg-green-50'
-                } hover:shadow-lg transition-shadow`}
+                }`}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
-                    <div className="flex items-center space-x-3 mb-2">
-                      <span className="text-2xl">
-                        {item.mode === 'ASL' ? '🤟' : '🎤'}
-                      </span>
-                      <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                        item.mode === 'ASL'
-                          ? 'bg-blue-200 text-blue-800'
-                          : 'bg-green-200 text-green-800'
+                    <div className="mb-2 flex items-center space-x-3">
+                      <span className="text-2xl">{item.mode === 'ASL' ? '🤟' : '🎤'}</span>
+                      <span className={`rounded-full px-3 py-1 text-sm font-semibold ${
+                        item.mode === 'ASL' ? 'bg-blue-200 text-blue-800' : 'bg-green-200 text-green-800'
                       }`}>
                         {item.mode}
                       </span>
-                      <div className="flex items-center text-gray-500 text-sm">
+                      <div className="flex items-center text-sm text-gray-500">
                         <User size={14} className="mr-1" />
-                        {item.speaker}
+                        {item.speaker || 'User'}
                       </div>
-                      <div className="flex items-center text-gray-500 text-sm">
+                      <div className="flex items-center text-sm text-gray-500">
                         <Clock size={14} className="mr-1" />
                         {formatTimestamp(item.timestamp)}
                       </div>
                     </div>
-                    <p className="text-xl text-gray-800">{item.text}</p>
+                    <p className="text-xl text-gray-800">{item.sentenceSnapshot || item.text}</p>
                   </div>
                   <button
                     onClick={() => speakText(item.text)}
-                    className="ml-4 p-3 bg-white hover:bg-gray-100 rounded-lg transition-colors"
+                    className="ml-4 rounded-lg bg-white p-3 transition-colors hover:bg-gray-100"
                     title="Speak this message"
                   >
                     <Volume2 size={20} className="text-purple-600" />
@@ -181,28 +165,6 @@ function HistoryPage() {
                 </div>
               </div>
             ))}
-          </div>
-        )}
-
-        {/* Export Options */}
-        {history.length > 0 && (
-          <div className="card bg-purple-50 mt-6">
-            <h3 className="text-xl font-semibold mb-3">Export Options</h3>
-            <p className="text-gray-600 mb-4">
-              Want to export your conversation history? Contact support for export features.
-            </p>
-            <div className="flex space-x-3">
-              <button className="btn-secondary" disabled>
-                Export as PDF
-              </button>
-              <button className="btn-secondary" disabled>
-                Export as CSV
-              </button>
-              <button className="btn-secondary" disabled>
-                Export as JSON
-              </button>
-            </div>
-            <p className="text-sm text-gray-500 mt-2">Coming soon!</p>
           </div>
         )}
       </div>

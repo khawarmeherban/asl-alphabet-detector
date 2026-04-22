@@ -349,6 +349,58 @@ video {
   transform: translateY(-4px);
 }
 
+/* ===================================
+   FEATURE 4: Practice Mode Styles
+   =================================== */
+.practice-mode-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(0, 0, 0, 0.8), rgba(20, 20, 20, 0.9));
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+  border-radius: 0.5rem;
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+.practice-header {
+  width: 100%;
+  max-width: 600px;
+  padding: 2rem;
+  text-align: center;
+}
+
+.practice-target {
+  margin: 2rem 0;
+  padding: 2rem;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 1rem;
+  backdrop-filter: blur(10px);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.practice-progress {
+  width: 100%;
+  max-width: 400px;
+  margin-top: 1rem;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 /* Slider components with enhanced visuals */
 .slider-fill {
   background: var(--gradient-primary);

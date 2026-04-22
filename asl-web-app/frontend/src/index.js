@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
 import * as serviceWorkerRegistration from './serviceWorkerRegistration';
+import { initializeFirebaseAnalytics } from './services/firebase';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
@@ -11,18 +12,13 @@ root.render(
   </React.StrictMode>
 );
 
-// Register service worker for PWA functionality
-serviceWorkerRegistration.register({
-  onSuccess: () => {
-    console.log('✓ App is cached and ready for offline use');
-  },
-  onUpdate: (registration) => {
-    console.log('✓ New version available! Update notification shown.');
-  }
-});
+// Disable service worker caching for exhibition/demo stability.
+// This also helps unregister older cached builds on existing clients.
+serviceWorkerRegistration.unregister();
 
-// Show PWA install prompt when available
-serviceWorkerRegistration.promptInstall();
+initializeFirebaseAnalytics().catch((error) => {
+  console.warn('Firebase analytics initialization skipped.', error);
+});
 
 // Performance monitoring
 if (process.env.NODE_ENV === 'production') {

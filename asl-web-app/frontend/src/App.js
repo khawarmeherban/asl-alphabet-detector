@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react
 import { Camera, Home, MessageSquare, BarChart3, History, Hand } from 'lucide-react';
 import { ThemeProvider, ThemeToggle } from './context/ThemeContext';
 
-// Lazy load pages for better performance (code splitting)
 const HomePage = lazy(() => import('./pages/HomePage'));
 const LiveDetection = lazy(() => import('./pages/LiveDetection'));
 const BidirectionalPage = lazy(() => import('./pages/BidirectionalPage'));
@@ -11,33 +10,30 @@ const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const GestureControl = lazy(() => import('./pages/GestureControl'));
 
-// Loading component with skeleton UI
 function LoadingFallback() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-600 via-pink-500 to-red-500">
-      <div className="text-center space-y-6">
+    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(0,255,136,0.18),_transparent_28%),linear-gradient(145deg,#020617,#08130f_55%,#03120c)]">
+      <div className="space-y-6 text-center">
         <div className="relative">
-          <div className="w-24 h-24 border-8 border-white border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-4xl" role="img" aria-label="hand sign">🤟</span>
+          <div className="mx-auto h-24 w-24 animate-spin rounded-full border-8 border-[#00ff88] border-t-transparent" />
+          <div className="absolute inset-0 flex items-center justify-center text-4xl" role="img" aria-label="hand sign">
+            🤟
           </div>
         </div>
         <div className="space-y-2">
-          <h2 className="text-2xl font-bold text-white">Loading ASL Detector...</h2>
-          <p className="text-purple-100">Please wait while we prepare your experience</p>
+          <h2 className="text-2xl font-bold text-white">Loading AlphaHand...</h2>
+          <p className="text-[#b8ffda]">Preparing the live communication workspace</p>
         </div>
-        {/* Skeleton content */}
-        <div className="max-w-md mx-auto space-y-3 mt-8">
-          <div className="h-4 bg-white bg-opacity-20 rounded animate-pulse"></div>
-          <div className="h-4 bg-white bg-opacity-20 rounded animate-pulse w-3/4 mx-auto"></div>
-          <div className="h-4 bg-white bg-opacity-20 rounded animate-pulse w-1/2 mx-auto"></div>
+        <div className="mx-auto mt-8 max-w-md space-y-3">
+          <div className="h-4 animate-pulse rounded bg-white/10" />
+          <div className="mx-auto h-4 w-3/4 animate-pulse rounded bg-white/10" />
+          <div className="mx-auto h-4 w-1/2 animate-pulse rounded bg-white/10" />
         </div>
       </div>
     </div>
   );
 }
 
-// Error Boundary Component
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -55,14 +51,11 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-red-500 to-pink-500">
+        <div className="min-h-screen flex items-center justify-center bg-[linear-gradient(145deg,#1f1111,#120606)]">
           <div className="card max-w-md text-center">
-            <h1 className="text-3xl font-bold text-red-600 mb-4">Something went wrong</h1>
-            <p className="text-gray-700 mb-6">{this.state.error?.message || 'An unexpected error occurred'}</p>
-            <button 
-              onClick={() => window.location.reload()} 
-              className="btn-primary"
-            >
+            <h1 className="mb-4 text-3xl font-bold text-red-600">Something went wrong</h1>
+            <p className="mb-6 text-gray-700">{this.state.error?.message || 'An unexpected error occurred'}</p>
+            <button onClick={() => window.location.reload()} className="btn-primary">
               Reload Page
             </button>
           </div>
@@ -76,7 +69,7 @@ class ErrorBoundary extends React.Component {
 
 function Navigation() {
   const location = useLocation();
-  
+
   const navItems = [
     { path: '/', icon: Home, label: 'Home' },
     { path: '/detection', icon: Camera, label: 'Live Detection' },
@@ -87,24 +80,24 @@ function Navigation() {
   ];
 
   return (
-    <nav className="glass-effect text-white p-4 shadow-lg" role="navigation" aria-label="Main navigation">
+    <nav className="border-b border-[#00ff88]/15 bg-slate-950/85 p-4 text-white shadow-lg backdrop-blur-xl" role="navigation" aria-label="Main navigation">
       <div className="container mx-auto flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <div className="text-3xl" role="img" aria-label="ASL emoji">🤟</div>
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-white to-purple-200 bg-clip-text text-transparent">
-            ASL Communication
+          <h1 className="bg-gradient-to-r from-white via-[#b8ffda] to-[#00ff88] bg-clip-text text-2xl font-bold text-transparent">
+            AlphaHand
           </h1>
         </div>
-        
+
         <div className="flex items-center space-x-4">
           <div className="flex space-x-1">
             {navItems.map(({ path, icon: Icon, label }) => (
               <Link
                 key={path}
                 to={path}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-all duration-300 focus-visible ${
+                className={`flex items-center space-x-2 rounded-lg px-4 py-2 transition-all duration-300 focus-visible ${
                   location.pathname === path
-                    ? 'bg-white bg-opacity-20 shadow-lg'
+                    ? 'bg-[#00ff88] text-slate-950 shadow-lg'
                     : 'hover:bg-white hover:bg-opacity-10'
                 }`}
                 aria-current={location.pathname === path ? 'page' : undefined}
@@ -115,8 +108,7 @@ function Navigation() {
               </Link>
             ))}
           </div>
-          
-          {/* Theme Toggle Button */}
+
           <div className="ml-2">
             <ThemeToggle />
           </div>

@@ -1,147 +1,117 @@
-# ASL Alphabet Detector - Complete Guide
+# AlphaHand Web App
 
-## 🚀 Quick Start
+AlphaHand is an ASL communication workspace built on top of the existing live detector. It keeps the webcam and detection loop central, adds AI-assisted word completion, browser speech, practice mode, Roman Urdu translation, and reverse text-to-sign playback.
 
-### Prerequisites
-- Python 3.8+
-- Node.js 14+
-- Webcam
-- Modern browser (Chrome/Edge recommended)
+## Features
 
-### Setup & Run
+- Real-time ASL alphabet detection with MediaPipe hand tracking and confidence overlays
+- Stable-letter confirmation with a 1.5 second hold before appending characters
+- Live word builder with Gemini autocomplete and local fallback suggestions
+- Smart noisy-input correction before suggestions, with Gemini retry logic and local fallback
+- Sentence builder with `SPACE`, `CLEAR`, and `Backspace` controls
+- Browser text-to-speech with voice selection and auto-speak on commit
+- Confidence bar, top-3 predictions, hand landmarks, and raw-coordinate debug panel
+- Dual-hand interaction where a secondary hand can trigger `SPACE`, `CLEAR`, and `SPEAK`
+- Camera quality guidance for low light, overlap, and framing issues
+- Practice mode with random letter challenges, score tracking, streaks, and hard-mode timer
+- Roman Urdu translation through Gemini with a dedicated speak action
+- Reverse mode for text or speech input to ASL sign-card playback
+- Feature boundaries and modular hooks for safer iteration
+
+## Tech Stack
+
+- React 18
+- MediaPipe Hands
+- Axios
+- Firebase App, Analytics, and Firestore
+- Lucide React
+- Browser APIs: `getUserMedia`, `speechSynthesis`, `SpeechRecognition`
+- Google Gemini API for autocomplete and Roman Urdu translation
+
+## Project Notes
+
+- Gemini API keys are entered in the UI and stored in `sessionStorage` only.
+- Firebase is configured client-side for Analytics and Firestore-backed app data sync.
+- Gemini failures do not crash the UI. The app falls back to local suggestions and clears translation state safely.
+- The upgraded UI is modular and browser-driven, but the sign prediction adapter still uses the existing `/predict` HTTP contract because this repo does not currently include a TF.js browser model artifact. The adapter lives in `frontend/src/features/liveDetection/useLiveDetectionEngine.js` so it can be swapped later without rewriting the page.
+
+## Setup
+
+### 1. Install frontend dependencies
+
 ```bash
-# Backend
+cd asl-web-app/frontend
+npm install
+```
+
+### 2. Start the prediction service
+
+```bash
 cd asl-web-app/backend
 pip install -r requirements.txt
 python app.py
+```
 
-# Frontend (new terminal)
+Default prediction URL:
+
+```env
+REACT_APP_API_URL=http://localhost:7860
+```
+
+### 3. Start the frontend
+
+```bash
 cd asl-web-app/frontend
-npm install
 npm start
 ```
 
-Visit: **http://localhost:3000**
+### 4. Build for production
 
----
-
-## 📋 Features
-
-### 1. **Live ASL Detection**
-- Real-time hand tracking with MediaPipe
-- Letter/number recognition
-- Color-coded confidence meter (Green/Yellow/Red)
-- Auto-stabilization (8-frame buffer)
-
-### 2. **Text-to-Speech**
-- Browser-based speech synthesis
-- Toggle ON/OFF control
-- Slow, clear voice (0.8x speed)
-- Works offline
-
-### 3. **Word Builder**
-- Auto letter accumulation
-- Space/Backspace/Clear controls
-- Character & word counter
-- Real-time display
-
-### 4. **Additional Features**
-- Conversation history
-- Word suggestions
-- Analytics dashboard
-- Bidirectional translation
-- Gesture controls
-
----
-
-## 🎯 Usage
-
-### Basic Workflow
-1. **Start Detection** → Camera activates
-2. **Show ASL Signs** → Letters detected
-3. **Check Confidence** → Green = accurate
-4. **Build Sentence** → Auto-accumulates
-5. **Speak/Save** → Output results
-
----
-
-## 🎨 UI Components
-
-### Confidence Meter
-- **Green (80-100%)**: High confidence
-- **Yellow (50-79%)**: Medium confidence  
-- **Red (0-49%)**: Low confidence
-
-### Tips for Better Detection
-- Good lighting
-- Centered hand position
-- Hold steady 2-3 seconds
-- Clear ASL signs
-
----
-
-## 🔧 Configuration
-
-### Backend (app.py)
-```python
-MODEL_PATH = 'path/to/asl_model.pkl'
-PORT = 5000
-HOST = '0.0.0.0'
-```
-
-### Frontend (.env)
-```env
-REACT_APP_API_URL=http://localhost:5000
-```
-
----
-
-## 🐛 Troubleshooting
-
-### Backend Not Starting
 ```bash
-# Check port availability
-netstat -ano | findstr "5000"
-
-# Restart backend
-python app.py
+cd asl-web-app/frontend
+npm run build
 ```
 
-### Model Not Loading
-- Verify `data/asl_model.pkl` exists
-- Retrain if corrupted: `python process_dataset.py`
+## Gemini Setup
 
-### Camera Not Working
-- Allow browser permissions
-- Close other apps using camera
-- Use Chrome/Edge browser
+1. Open the `Live Detection` page.
+2. Paste your Gemini API key into the `Gemini API Key` field.
+3. The key is saved to `sessionStorage` for the current browser session only.
+4. Suggestions and Roman Urdu translation immediately use that key.
 
-### Low Accuracy
-- Improve lighting
-- Center hand in frame
-- Hold signs steady
+## Netlify Notes
 
----
+- The frontend builds cleanly with `npm run build`.
+- MediaPipe assets load from jsDelivr at runtime.
+- Firebase web config is included in the frontend and is expected for browser-side app services.
+- Firestore should have rules that permit the intended app reads/writes for history and practice sync.
+- If you deploy the current repo as-is, make sure `REACT_APP_API_URL` points to a reachable prediction service.
+- Gemini calls happen directly from the browser, so use a restricted key appropriate for client-side usage.
+- Do not store Gemini API keys in Firebase, Firestore, or Remote Config.
 
-## 📁 Project Structure
+## Screenshots
 
+- `[Placeholder]` Live detection workspace
+- `[Placeholder]` Practice mode overlay
+- `[Placeholder]` Reverse mode playback grid
+- `[Placeholder]` Roman Urdu translation panel
+
+## Folder Guide
+
+```text
+frontend/src/features/liveDetection/
+  FeatureBoundary.js
+  aslReferenceData.js
+  constants.js
+  featureToggles.js
+  geminiService.js
+  useLiveDetectionEngine.js
+  useSpeechSynthesis.js
+frontend/src/services/
+  firebase.js
+  firebaseSync.js
 ```
-asl-web-app/
-├── backend/
-│   ├── app.py              # Flask server
-│   ├── requirements.txt    # Python deps
-│   └── start_backend.bat   # Windows launcher
-├── frontend/
-│   ├── src/
-│   │   ├── pages/          # React components
-│   │   ├── App.js          # Main app
-│   │   └── index.css       # Styles
-│   ├── public/
-│   └── package.json        # Node deps
-└── data/
-    └── asl_model.pkl       # ML model
-```
 
----
+## Validation
 
-**Built with ❤️ for accessibility and education**
+- Frontend production build verified with `npm run build`

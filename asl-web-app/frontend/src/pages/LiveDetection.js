@@ -1,1071 +1,1460 @@
-import React, { useRef, useEffect, useState } from 'react';
-import axios from 'axios';
-import { Hands } from '@mediapipe/hands';
-import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
+import React, {
+  useCallback,
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react';
+import {
+  AlertTriangle,
+  Bot,
+  Camera,
+  Gauge,
+  Hand,
+  Languages,
+  Mic,
+  MicOff,
+  Pause,
+  Play,
+  RefreshCcw,
+  Sparkles,
+  Volume2,
+  VolumeX
+} from 'lucide-react';
+import FeatureBoundary from '../features/liveDetection/FeatureBoundary';
+import getReferenceCard from '../features/liveDetection/aslReferenceData';
+import {
+  API_URL,
+  ALL_PRACTICE_LETTERS,
+  DEFAULT_REVERSE_SPEED,
+  EASY_PRACTICE_LETTERS,
+  GEMINI_SESSION_KEY,
+  HOLD_CONFIRM_MS,
+  LETTER_COOLDOWN_MS,
+  MAX_REVERSE_SPEED,
+  MIN_CLIENT_CONFIDENCE,
+  MIN_REVERSE_SPEED,
+  QUICK_PHRASES,
+  TOAST_TIMEOUT_MS
+} from '../features/liveDetection/constants';
+import {
+  correctNoisyWord,
+  fetchGeminiWordSuggestions,
+  getFallbackCorrectedWord,
+  getFallbackWordSuggestions,
+  translateSentenceToRomanUrdu
+} from '../features/liveDetection/geminiService';
+import liveFeatureToggles from '../features/liveDetection/featureToggles';
+import useLiveDetectionEngine from '../features/liveDetection/useLiveDetectionEngine';
+import useSpeechSynthesis from '../features/liveDetection/useSpeechSynthesis';
+import { saveConversationEntry, savePracticeSnapshot } from '../services/firebaseSync';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:7860';
-const QUICK_PHRASES = [
-  'Hello',
-  'How are you?',
-  'I need help',
-  'Please wait',
-  'Thank you',
-  'I need water',
-  'Yes, please',
-  'No, thank you'
-];
+function loadSessionValue(key, fallback = '') {
+  try {
+    return sessionStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadLocalArray(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getConfidenceTone(confidence) {
+  if (confidence >= 0.8) {
+    return { label: 'High', color: '#00ff88' };
+  }
+  if (confidence >= 0.55) {
+    return { label: 'Medium', color: '#ffd166' };
+  }
+  return { label: 'Low', color: '#ff6b6b' };
+}
+
+function normalizeSignedText(text) {
+  return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function buildSentence(sentence, currentWord) {
+  const parts = [normalizeSignedText(sentence), normalizeSignedText(currentWord)].filter(Boolean);
+  return parts.join(' ').trim();
+}
+
+function sanitizeTextToLetters(text) {
+  return String(text || '')
+    .toUpperCase()
+    .split('')
+    .filter((character) => /[A-Z ]/.test(character));
+}
+
+function choosePracticeLetter(difficulty, completedLetters) {
+  const pool = difficulty === 'easy' ? EASY_PRACTICE_LETTERS : ALL_PRACTICE_LETTERS;
+  const remaining = pool.filter((letter) => !completedLetters.has(letter));
+  const source = remaining.length ? remaining : pool;
+  return source[Math.floor(Math.random() * source.length)];
+}
+
+function ToastStack({ toasts }) {
+  return (
+    <div className="fixed right-4 top-4 z-50 flex w-[min(92vw,22rem)] flex-col gap-3">
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          className={`rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur ${
+            toast.type === 'error'
+              ? 'border-red-400/40 bg-red-500/15 text-red-50'
+              : toast.type === 'success'
+                ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-50'
+                : 'border-[#00ff88]/30 bg-slate-900/90 text-slate-100'
+          }`}
+        >
+          <p className="text-sm font-medium">{toast.message}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PillButton({ active, children, ...props }) {
+  return (
+    <button
+      {...props}
+      className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+        active
+          ? 'border-[#00ff88] bg-[#00ff88] text-slate-950 shadow-[0_0_22px_rgba(0,255,136,0.25)]'
+          : 'border-slate-700 bg-slate-900/80 text-slate-200 hover:border-slate-500'
+      } ${props.className || ''}`}
+    >
+      {children}
+    </button>
+  );
+}
 
 function LiveDetection() {
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [prediction, setPrediction] = useState('');
-  const [confidence, setConfidence] = useState(0);
-  const [translatedText, setTranslatedText] = useState('');
+  const overlayRef = useRef(null);
+  const letterHoldRef = useRef({ letter: '', since: 0, confirmedAt: 0 });
+  const recognitionRef = useRef(null);
+  const controlActionHandlerRef = useRef(null);
+  const practiceSessionIdRef = useRef(`practice-${Math.random().toString(36).slice(2, 10)}`);
+  const suggestionRequestIdRef = useRef(0);
+
+  const [activeTab, setActiveTab] = useState('sign');
   const [isDetecting, setIsDetecting] = useState(false);
+  const [showLandmarks, setShowLandmarks] = useState(true);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+  const [geminiApiKey, setGeminiApiKey] = useState(() => loadSessionValue(GEMINI_SESSION_KEY));
+  const [currentWord, setCurrentWord] = useState('');
+  const [correctedWord, setCorrectedWord] = useState('');
+  const [sentenceText, setSentenceText] = useState('');
   const [wordSuggestions, setWordSuggestions] = useState([]);
-  const [phraseSuggestions, setPhraseSuggestions] = useState(() => QUICK_PHRASES.slice(0, 4));
-  
-  // ========================================
-  // TEXT-TO-SPEECH Feature:
-  // This allows the computer to READ OUT LOUD the detected ASL text
-  // voiceEnabled: Controls if voice is ON or OFF (like a switch)
-  // ========================================
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [sentenceHistory, setSentenceHistory] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asl-word-builder-history');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
+  const [isSuggestionLoading, setIsSuggestionLoading] = useState(false);
+  const [isCorrectionLoading, setIsCorrectionLoading] = useState(false);
+  const [holdProgress, setHoldProgress] = useState(0);
+  const [letterHistory, setLetterHistory] = useState(() => loadLocalArray('alphahand-letter-history'));
+  const [sentenceHistory, setSentenceHistory] = useState(() => loadLocalArray('alphahand-sentence-history'));
+  const [toasts, setToasts] = useState([]);
+  const [autoSpeakEnabled, setAutoSpeakEnabled] = useState(false);
+  const [urduTranslation, setUrduTranslation] = useState('');
+  const [isUrduLoading, setIsUrduLoading] = useState(false);
+  const [isPracticeMode, setIsPracticeMode] = useState(false);
+  const [practiceDifficulty, setPracticeDifficulty] = useState('medium');
+  const [practiceLetter, setPracticeLetter] = useState('A');
+  const [practiceScore, setPracticeScore] = useState(0);
+  const [practiceStreak, setPracticeStreak] = useState(0);
+  const [practiceCompleted, setPracticeCompleted] = useState(() => new Set());
+  const [practiceTimer, setPracticeTimer] = useState(5);
+  const [practiceBurst, setPracticeBurst] = useState(false);
+  const [reverseInput, setReverseInput] = useState('');
+  const [reverseListening, setReverseListening] = useState(false);
+  const [reversePlaying, setReversePlaying] = useState(false);
+  const [reverseSpeed, setReverseSpeed] = useState(DEFAULT_REVERSE_SPEED);
+  const [reverseIndex, setReverseIndex] = useState(0);
+  const [backendHealth, setBackendHealth] = useState({
+    status: 'checking',
+    message: 'Checking prediction backend...',
+    checkedAt: ''
   });
-  
-  // ========================================
-  // WORD BUILDER Feature:
-  // This stores all detected letters to build complete words and sentences
-  // builtSentence: The full sentence being created (stores all letters)
-  // ========================================
-  const [builtSentence, setBuiltSentence] = useState('');
-  const [connectionStatus, setConnectionStatus] = useState('disconnected');
-  const [error, setError] = useState(null);
-  const [stability, setStability] = useState({ hits: 0, ratio: 0, ready: false });
-  const handsRef = useRef(null);
-  const cameraRef = useRef(null);
-  const isActiveRef = useRef(false);
-  const predictionBuffer = useRef([]);
-  const stableCount = useRef(0);
-  const lastPredictionTime = useRef(0);
-  const inFlightPrediction = useRef(false);
-  const lastAcceptedPrediction = useRef({ label: '', at: 0 });
-  const sessionIdRef = useRef(`live-${Math.random().toString(36).slice(2, 10)}`);
-  const PREDICTION_THROTTLE = 140; // ms
-  const PREDICTION_BUFFER_SIZE = 5;
-  const MIN_CONFIDENCE = 0.7;
-  const MIN_MARGIN = 0.08;
-  const REQUIRED_STABLE_HITS = 2;
-  const LETTER_COOLDOWN_MS = 1100;
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    // Check backend connection
-    checkConnection();
-    
-    if (isDetecting) {
-      initializeCamera();
-    } else {
-      stopCamera();
-    }
+  const {
+    supported: speechSupported,
+    voices,
+    selectedVoice,
+    selectedVoiceURI,
+    setSelectedVoiceURI,
+    isSpeaking,
+    speakText,
+    stopSpeaking
+  } = useSpeechSynthesis();
 
-    return () => stopCamera();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDetecting]);
+  const {
+    cameraStatus,
+    predictionState,
+    lastLandmarks,
+    connectionStatus,
+    error: detectionError,
+    visionQuality,
+    sessionId
+  } = useLiveDetectionEngine({
+    enabled: isDetecting,
+    videoRef,
+    overlayRef,
+    showLandmarks,
+    onControlGesture: (action) => controlActionHandlerRef.current?.(action)
+  });
 
-  useEffect(() => {
-    localStorage.setItem('asl-word-builder-history', JSON.stringify(sentenceHistory.slice(0, 8)));
-  }, [sentenceHistory]);
+  const deferredReverseInput = useDeferredValue(reverseInput);
+  const reverseSequence = useMemo(
+    () => sanitizeTextToLetters(deferredReverseInput),
+    [deferredReverseInput]
+  );
+  const displayedWord = correctedWord || currentWord;
+  const currentSentence = buildSentence(sentenceText, displayedWord);
+  const referenceCard = getReferenceCard(
+    activeTab === 'reverse'
+      ? reverseSequence[reverseIndex] && reverseSequence[reverseIndex] !== ' '
+        ? reverseSequence[reverseIndex]
+        : 'A'
+      : practiceLetter
+  );
+  const confidenceTone = getConfidenceTone(predictionState.confidence);
+  const topPredictions = predictionState.topPredictions || [];
 
-  const checkConnection = async () => {
-    try {
-      await axios.get(`${API_URL}/health`, { timeout: 5000 });
-      setConnectionStatus('connected');
-      setError(null);
-    } catch (err) {
-      setConnectionStatus('disconnected');
-      setError(`Cannot connect to backend. Make sure the Flask server is running at ${API_URL}.`);
-    }
+  const pushToast = (message, type = 'info') => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setToasts((prev) => [...prev, { id, message, type }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    }, TOAST_TIMEOUT_MS);
   };
 
-  const initializeCamera = async () => {
+  const checkBackendHealth = useCallback(async () => {
+    setBackendHealth({
+      status: 'checking',
+      message: 'Checking prediction backend...',
+      checkedAt: new Date().toISOString()
+    });
+
     try {
-      // Clean up existing instances first
-      if (cameraRef.current) {
-        try {
-          cameraRef.current.stop();
-        } catch (e) {
-          console.warn('Error stopping existing camera:', e);
-        }
-        cameraRef.current = null;
-      }
-      
-      if (handsRef.current) {
-        try {
-          handsRef.current.close();
-        } catch (e) {
-          console.warn('Error closing existing hands:', e);
-        }
-        // Set to null immediately after close
-        handsRef.current = null;
+      const response = await fetch(`${API_URL}/health`, {
+        method: 'GET'
+      });
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Health endpoint returned a non-OK response.');
       }
 
-      // Check if camera API is available
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setError('Camera API not supported. Please use a modern browser (Chrome, Firefox, or Edge).');
+      setBackendHealth({
+        status: payload?.model_loaded ? 'healthy' : 'degraded',
+        message: payload?.model_loaded
+          ? 'Backend reachable and model loaded.'
+          : 'Backend reachable, but the model is not loaded.',
+        checkedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      setBackendHealth({
+        status: 'offline',
+        message: error.message || 'Prediction backend is unreachable.',
+        checkedAt: new Date().toISOString()
+      });
+    }
+  }, []);
+
+  const requestSuggestions = useCallback(async (letters) => {
+    const normalized = normalizeSignedText(letters);
+    const requestId = suggestionRequestIdRef.current + 1;
+    suggestionRequestIdRef.current = requestId;
+
+    if (!normalized) {
+      startTransition(() => {
+        if (suggestionRequestIdRef.current === requestId) {
+          setWordSuggestions([]);
+          setCorrectedWord('');
+        }
+      });
+      return;
+    }
+
+    if (suggestionRequestIdRef.current === requestId) {
+      setIsCorrectionLoading(true);
+    }
+    let corrected = normalized.toLowerCase();
+    try {
+      corrected = await correctNoisyWord(normalized, geminiApiKey);
+    } catch (error) {
+      console.error('Gemini correction failed.', error);
+      corrected = getFallbackCorrectedWord(normalized);
+      pushToast(error.message || 'AI correction failed. Using local fallback.', 'error');
+    } finally {
+      if (suggestionRequestIdRef.current === requestId) {
+        setIsCorrectionLoading(false);
+      }
+    }
+
+    if (suggestionRequestIdRef.current !== requestId) {
+      return;
+    }
+
+    startTransition(() => setCorrectedWord(corrected));
+
+    if (!geminiApiKey) {
+      startTransition(() => {
+        if (suggestionRequestIdRef.current === requestId) {
+          setWordSuggestions(getFallbackWordSuggestions(corrected));
+        }
+      });
+      return;
+    }
+
+    if (suggestionRequestIdRef.current === requestId) {
+      setIsSuggestionLoading(true);
+    }
+    try {
+      const suggestions = await fetchGeminiWordSuggestions(corrected, geminiApiKey);
+      if (suggestionRequestIdRef.current !== requestId) {
+        return;
+      }
+      startTransition(() => {
+        if (suggestionRequestIdRef.current === requestId) {
+          setWordSuggestions(suggestions.length ? suggestions : getFallbackWordSuggestions(corrected));
+        }
+      });
+    } catch (error) {
+      console.error('Gemini autocomplete failed.', error);
+      pushToast(error.message || 'Gemini suggestions failed. Using local fallback.', 'error');
+      if (suggestionRequestIdRef.current !== requestId) {
+        return;
+      }
+      startTransition(() => {
+        if (suggestionRequestIdRef.current === requestId) {
+          setWordSuggestions(getFallbackWordSuggestions(corrected));
+        }
+      });
+    } finally {
+      if (suggestionRequestIdRef.current === requestId) {
+        setIsSuggestionLoading(false);
+      }
+    }
+  }, [geminiApiKey]);
+
+  // FEATURE 1: confirm stable letters after 1.5s without changing the underlying detector.
+  useEffect(() => {
+    if (!isDetecting || !predictionState.stablePrediction || predictionState.confidence < MIN_CLIENT_CONFIDENCE) {
+      letterHoldRef.current = { letter: '', since: 0, confirmedAt: 0 };
+      setHoldProgress(0);
+      return undefined;
+    }
+
+    const nextLetter = predictionState.stablePrediction;
+    if (letterHoldRef.current.letter !== nextLetter) {
+      letterHoldRef.current = { letter: nextLetter, since: Date.now(), confirmedAt: 0 };
+      setHoldProgress(0);
+    }
+
+    const interval = window.setInterval(() => {
+      if (letterHoldRef.current.letter !== nextLetter) {
         return;
       }
 
-      // Request camera permissions first
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        } 
-      });
-      
-      // Stop the test stream
-      stream.getTracks().forEach(track => track.stop());
+      const elapsed = Date.now() - letterHoldRef.current.since;
+      setHoldProgress(Math.min(elapsed / HOLD_CONFIRM_MS, 1));
 
-      // Set active flag
-      isActiveRef.current = true;
+      if (
+        elapsed >= HOLD_CONFIRM_MS &&
+        Date.now() - letterHoldRef.current.confirmedAt > LETTER_COOLDOWN_MS
+      ) {
+        letterHoldRef.current.confirmedAt = Date.now();
+        const confirmedLetter = nextLetter;
 
-      const hands = new Hands({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-      });
-
-      hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.7,
-        minTrackingConfidence: 0.7
-      });
-
-      hands.onResults(onResults);
-      handsRef.current = hands;
-
-      if (videoRef.current) {
-        // Wait for video element to be ready
-        await new Promise((resolve) => {
-          if (videoRef.current && videoRef.current.readyState >= 2) {
-            resolve();
-          } else if (videoRef.current) {
-            videoRef.current.addEventListener('loadedmetadata', resolve, { once: true });
-            // Fallback timeout
-            setTimeout(resolve, 2000);
+        if (isPracticeMode) {
+          if (confirmedLetter === practiceLetter) {
+            setPracticeScore((prev) => prev + 10);
+            setPracticeStreak((prev) => prev + 1);
+            setPracticeCompleted((prev) => new Set([...prev, confirmedLetter]));
+            pushToast(`Correct: ${confirmedLetter} (+10)`, 'success');
           } else {
-            resolve();
+            setPracticeStreak(0);
           }
-        });
+        } else {
+          setCurrentWord((prev) => {
+            const nextWord = `${prev}${confirmedLetter}`.toLowerCase();
+            requestSuggestions(nextWord);
+            return nextWord;
+          });
 
-        if (!isActiveRef.current) return; // Check if still active after wait
-
-        const camera = new MediaPipeCamera(videoRef.current, {
-          onFrame: async () => {
-            // Only send frames if still active
-            if (isActiveRef.current && handsRef.current && videoRef.current) {
-              try {
-                // Only call send if handsRef.current is not null
-                if (handsRef.current) {
-                  await handsRef.current.send({ image: videoRef.current });
-                }
-              } catch (e) {
-                // Silently ignore errors from closed instances
-              }
-            }
-          },
-          width: 1280,
-          height: 720
-        });
-        
-        try {
-          await camera.start();
-          cameraRef.current = camera;
-          setError(null);
-        } catch (e) {
-          console.error('Camera start error:', e);
-          throw new Error('Failed to start camera: ' + e.message);
+          setLetterHistory((prev) => [
+            {
+              letter: confirmedLetter,
+              confidence: predictionState.confidence,
+              createdAt: new Date().toISOString()
+            },
+            ...prev
+          ].slice(0, 24));
         }
-      }
-    } catch (error) {
-      console.error('Camera initialization error:', error);
-      let errorMessage = 'Failed to access camera. ';
-      
-      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-        errorMessage += 'Please allow camera permissions in your browser settings.';
-      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-        errorMessage += 'No camera found. Please connect a camera and try again.';
-      } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-        errorMessage += 'Camera is already in use by another application.';
-      } else {
-        errorMessage += error.message || 'Unknown error occurred.';
-      }
-      
-      setError(errorMessage);
-      setIsDetecting(false);
-    }
-  };
-
-  const stopCamera = () => {
-    // Set flag first to stop frame processing
-    isActiveRef.current = false;
-    
-    try {
-      if (cameraRef.current) {
-        cameraRef.current.stop();
-        cameraRef.current = null;
-      }
-    } catch (error) {
-      console.warn('Error stopping camera:', error);
-    }
-    
-    // Small delay to ensure camera callbacks finish
-    setTimeout(() => {
-      try {
-        if (handsRef.current) {
-          handsRef.current.close();
-        }
-        // Set to null immediately after close
-        handsRef.current = null;
-      } catch (error) {
-        console.warn('Error closing hands:', error);
       }
     }, 100);
-  };
 
-  const onResults = async (results) => {
-    // Check if still active
-    if (!isActiveRef.current) return;
-    
-    const canvas = canvasRef.current;
-    if (!canvas || !results || !results.image) return;
-    
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
-    
-    // Set canvas dimensions if they don't match
-    if (canvas.width !== results.image.width || canvas.height !== results.image.height) {
-      canvas.width = results.image.width;
-      canvas.height = results.image.height;
-    }
-    
-    ctx.save();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
+    return () => window.clearInterval(interval);
+  }, [
+    isDetecting,
+    isPracticeMode,
+    practiceLetter,
+    predictionState.confidence,
+    predictionState.stablePrediction,
+    requestSuggestions
+  ]);
+
+  useEffect(() => {
+    localStorage.setItem('alphahand-letter-history', JSON.stringify(letterHistory.slice(0, 24)));
+  }, [letterHistory]);
+
+  useEffect(() => {
+    localStorage.setItem('alphahand-sentence-history', JSON.stringify(sentenceHistory.slice(0, 10)));
+  }, [sentenceHistory]);
+
+  useEffect(() => {
     try {
-      ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
-    } catch (e) {
-      console.error('Draw image error:', e);
-      ctx.restore();
-      return;
+      sessionStorage.setItem(GEMINI_SESSION_KEY, geminiApiKey);
+    } catch {
+      // Ignore storage errors in restricted browser modes.
+    }
+  }, [geminiApiKey]);
+
+  useEffect(() => {
+    checkBackendHealth();
+  }, [checkBackendHealth]);
+
+  useEffect(() => {
+    if (!isPracticeMode) {
+      return undefined;
     }
 
-    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-      const landmarks = results.multiHandLandmarks[0];
-      
-      // Draw hand landmarks immediately (no requestAnimationFrame)
-      try {
-        drawHandLandmarks(ctx, landmarks);
-      } catch (e) {
-        console.error('Draw landmarks error:', e);
-      }
-      
-      // Throttle and prevent overlapping prediction requests
-      const now = Date.now();
-      if (inFlightPrediction.current || now - lastPredictionTime.current < PREDICTION_THROTTLE) {
-        ctx.restore();
-        return;
-      }
-      lastPredictionTime.current = now;
-      
-      const handedness = results.multiHandedness?.[0]?.label;
-      const normalizedLandmarks = normalizeLandmarks(landmarks, handedness);
-      
-      try {
-        inFlightPrediction.current = true;
-        const response = await axios.post(`${API_URL}/predict`, {
-          landmarks: normalizedLandmarks,
-          sessionId: sessionIdRef.current
-        });
-        
-        const {
-          prediction: pred,
-          raw_prediction: rawPred = '',
-          confidence: conf,
-          stable_confidence: stableConf = conf,
-          confidence_margin: margin = 1,
-          accepted = true,
-          temporal_hits: temporalHits = 0,
-          temporal_ratio: temporalRatio = 0,
-          temporal_accepted: temporalAccepted = false
-        } = response.data;
-        setConfidence(temporalAccepted ? (stableConf || conf || 0) : (conf || 0));
-        setStability({ hits: temporalHits, ratio: temporalRatio, ready: temporalAccepted });
+    setPracticeLetter((prev) => prev || choosePracticeLetter(practiceDifficulty, practiceCompleted));
+    if (practiceDifficulty !== 'hard') {
+      return undefined;
+    }
 
-        if (!accepted || !rawPred || conf < MIN_CONFIDENCE || margin < MIN_MARGIN) {
-          predictionBuffer.current = [];
-          stableCount.current = 0;
-          setPrediction('');
-          return;
+    setPracticeTimer(5);
+    const interval = window.setInterval(() => {
+      setPracticeTimer((prev) => {
+        if (prev <= 1) {
+          setPracticeStreak(0);
+          setPracticeLetter(choosePracticeLetter(practiceDifficulty, practiceCompleted));
+          pushToast('Practice timer expired. New challenge loaded.', 'info');
+          return 5;
         }
-
-        if (!temporalAccepted || !pred) {
-          predictionBuffer.current = [];
-          stableCount.current = 0;
-          setPrediction(rawPred);
-          return;
-        }
-        
-        predictionBuffer.current.push({ label: pred, confidence: stableConf || conf });
-        if (predictionBuffer.current.length > PREDICTION_BUFFER_SIZE) {
-          predictionBuffer.current.shift();
-        }
-        
-        const labels = predictionBuffer.current.map(item => item.label);
-        const mostCommon = getMostCommon(labels);
-        const matches = predictionBuffer.current.filter(item => item.label === mostCommon);
-        const averagedConfidence = matches.reduce((sum, item) => sum + item.confidence, 0) / matches.length;
-
-        setPrediction(mostCommon);
-        setConfidence(averagedConfidence);
-        stableCount.current = Math.max(matches.length, temporalHits);
-        
-        if (stableCount.current >= REQUIRED_STABLE_HITS) {
-          const isDuplicate =
-            lastAcceptedPrediction.current.label === mostCommon &&
-            now - lastAcceptedPrediction.current.at < LETTER_COOLDOWN_MS;
-
-          if (!isDuplicate) {
-            setTranslatedText(prev => {
-              const newText = prev + mostCommon;
-              const shouldAddSpace = /[a-z]{4}$/.test(newText.toLowerCase());
-              const finalText = shouldAddSpace ? `${newText} ` : newText;
-              fetchWordSuggestions(finalText);
-              return finalText;
-            });
-
-            addLetterToSentence(mostCommon);
-            lastAcceptedPrediction.current = { label: mostCommon, at: now };
-          }
-          
-          stableCount.current = 0;
-          predictionBuffer.current = predictionBuffer.current.slice(-2);
-        }
-      } catch (error) {
-        console.error('Prediction error:', error);
-        if (error.code === 'ECONNREFUSED') {
-          setConnectionStatus('disconnected');
-          setError('Lost connection to backend');
-        }
-      } finally {
-        inFlightPrediction.current = false;
-      }
-    } else {
-      predictionBuffer.current = [];
-      stableCount.current = 0;
-      setPrediction('');
-      setConfidence(0);
-      setStability({ hits: 0, ratio: 0, ready: false });
-    }
-    
-    ctx.restore();
-  };
-
-  const drawHandLandmarks = (ctx, landmarks) => {
-    ctx.fillStyle = 'red';
-    ctx.strokeStyle = 'blue';
-    ctx.lineWidth = 2;
-
-    // Draw connections
-    const connections = [
-      [0,1],[1,2],[2,3],[3,4], // Thumb
-      [0,5],[5,6],[6,7],[7,8], // Index
-      [0,9],[9,10],[10,11],[11,12], // Middle
-      [0,13],[13,14],[14,15],[15,16], // Ring
-      [0,17],[17,18],[18,19],[19,20], // Pinky
-      [5,9],[9,13],[13,17] // Palm
-    ];
-
-    connections.forEach(([start, end]) => {
-      ctx.beginPath();
-      ctx.moveTo(
-        landmarks[start].x * canvasRef.current.width,
-        landmarks[start].y * canvasRef.current.height
-      );
-      ctx.lineTo(
-        landmarks[end].x * canvasRef.current.width,
-        landmarks[end].y * canvasRef.current.height
-      );
-      ctx.stroke();
-    });
-
-    // Draw points
-    landmarks.forEach(landmark => {
-      ctx.beginPath();
-      ctx.arc(
-        landmark.x * canvasRef.current.width,
-        landmark.y * canvasRef.current.height,
-        5, 0, 2 * Math.PI
-      );
-      ctx.fill();
-    });
-  };
-
-  const normalizeLandmarks = (landmarks, handedness = null) => {
-    const coords = landmarks.map(lm => [lm.x, lm.y]);
-    const wrist = coords[0];
-    let normalized = coords.map(([x, y]) => [x - wrist[0], y - wrist[1]]);
-
-    if (String(handedness || '').toLowerCase() === 'left') {
-      normalized = normalized.map(([x, y]) => [-x, y]);
-    }
-    
-    const xs = normalized.map(([x]) => x);
-    const ys = normalized.map(([, y]) => y);
-    const xMin = Math.min(...xs);
-    const xMax = Math.max(...xs);
-    const yMin = Math.min(...ys);
-    const yMax = Math.max(...ys);
-    const scale = Math.max(xMax - xMin, yMax - yMin);
-    
-    if (scale > 0) {
-      return normalized.flat().map(v => v / scale);
-    }
-    return normalized.flat();
-  };
-
-  const getMostCommon = (arr) => {
-    const counts = {};
-    arr.forEach(item => {
-      counts[item] = (counts[item] || 0) + 1;
-    });
-    return Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
-  };
-
-  const fetchWordSuggestions = async (text) => {
-    const normalizedText = String(text || '').trim();
-
-    if (!normalizedText) {
-      setWordSuggestions([]);
-      setPhraseSuggestions(QUICK_PHRASES.slice(0, 4));
-      return;
-    }
-
-    try {
-      const response = await axios.post(`${API_URL}/predict-words`, { text: normalizedText });
-      setWordSuggestions(response.data.predictions || []);
-      setPhraseSuggestions(response.data.phrases || QUICK_PHRASES.slice(0, 4));
-    } catch (error) {
-      console.error('Word prediction error:', error);
-      setPhraseSuggestions(QUICK_PHRASES.slice(0, 4));
-    }
-  };
-
-  // ========================================
-  // TEXT-TO-SPEECH Function:
-  // This function makes the browser READ the text OUT LOUD using the Web Speech API
-  // How it works:
-  // 1. Check if browser supports speech (speechSynthesis)
-  // 2. Create a "speech" object with the text to speak
-  // 3. Set voice speed (rate) - slower for students
-  // 4. Set voice volume (0 to 1)
-  // 5. Tell browser to speak the text
-  // ========================================
-  const handleSpeak = () => {
-    // Check if voiceEnabled is OFF, don't speak
-    if (!voiceEnabled) {
-      alert('Voice is turned OFF. Please enable it first.');
-      return;
-    }
-    
-    // Use the Word Builder sentence if available, otherwise use translatedText
-    const textToSpeak = builtSentence || translatedText;
-    
-    if (!textToSpeak) {
-      alert('No text to speak. Start detecting ASL signs first!');
-      return;
-    }
-    
-    // Check if browser supports Text-to-Speech
-    if ('speechSynthesis' in window) {
-      // Stop any previous speech first
-      window.speechSynthesis.cancel();
-      
-      // Create a new speech request
-      const utterance = new SpeechSynthesisUtterance(textToSpeak);
-      
-      // Set voice properties for clarity (good for students)
-      utterance.rate = 0.8;    // Speed: 0.8 = slower and clearer
-      utterance.pitch = 1.0;   // Pitch: 1.0 = normal voice
-      utterance.volume = 1.0;  // Volume: 1.0 = maximum
-      utterance.lang = 'en-US'; // Language: English
-      
-      // When speech starts, update status
-      utterance.onstart = () => {
-        setIsSpeaking(true);
-      };
-      
-      // When speech ends, update status
-      utterance.onend = () => {
-        setIsSpeaking(false);
-      };
-      
-      // If error occurs, show message
-      utterance.onerror = (event) => {
-        console.error('Speech error:', event);
-        setIsSpeaking(false);
-        alert('Error speaking text. Please try again.');
-      };
-      
-      // START SPEAKING!
-      window.speechSynthesis.speak(utterance);
-    } else {
-      alert('Your browser does not support Text-to-Speech. Try Chrome or Edge.');
-    }
-  };
-
-  const handleSaveToHistory = async () => {
-    const textToSave = (builtSentence || translatedText).trim();
-    if (!textToSave) return;
-
-    try {
-      await axios.post(`${API_URL}/history`, {
-        text: textToSave,
-        speaker: 'User',
-        mode: 'ASL'
+        return prev - 1;
       });
-      alert('Saved to history!');
-    } catch (error) {
-      console.error('History error:', error);
-    }
-  };
+    }, 1000);
 
-  const applySuggestion = (word) => {
-    const sourceText = builtSentence || translatedText;
-    const trimmed = sourceText.trimEnd();
-    const parts = trimmed ? trimmed.split(/\s+/) : [];
-    if (parts.length === 0) {
-      const next = `${word} `;
-      setTranslatedText(next);
-      setBuiltSentence(next);
-      fetchWordSuggestions(next);
+    return () => window.clearInterval(interval);
+  }, [isPracticeMode, practiceCompleted, practiceDifficulty]);
+
+  useEffect(() => {
+    if (!isPracticeMode) {
       return;
     }
 
-    parts[parts.length - 1] = word;
-    const next = `${parts.join(' ')} `;
-    setTranslatedText(next);
-    setBuiltSentence(next);
-    fetchWordSuggestions(next);
-  };
-
-  const applyPhrase = (phrase) => {
-    const cleanedPhrase = String(phrase || '').trim();
-    if (!cleanedPhrase) return;
-
-    const next = `${cleanedPhrase}${/[.!?]$/.test(cleanedPhrase) ? '' : ''} `;
-    setTranslatedText(next);
-    setBuiltSentence(next);
-    fetchWordSuggestions(next);
-  };
-  
-  // ========================================
-  // WORD BUILDER Functions:
-  // These functions help users build complete sentences from detected letters
-  // ========================================
-  
-  // ADD SPACE Function:
-  // How it works: Add a space character to the sentence (like pressing spacebar)
-  // This separates words: "HELLO" + SPACE = "HELLO "
-  const handleAddSpace = () => {
-    const currentText = builtSentence || translatedText;
-    const next = currentText.endsWith(' ') || !currentText ? currentText : `${currentText} `;
-    setBuiltSentence(next);
-    setTranslatedText(next);
-    fetchWordSuggestions(next);
-  };
-  
-  // BACKSPACE Function:
-  // How it works: Remove the last character from the sentence
-  // Example: "HELLO" -> Backspace -> "HELL"
-  // Uses .slice(0, -1) which means "take all characters except the last one"
-  const handleBackspace = () => {
-    const currentText = builtSentence || translatedText;
-    const next = currentText.slice(0, -1);
-    setBuiltSentence(next);
-    setTranslatedText(next);
-    fetchWordSuggestions(next);
-  };
-
-  const handleDeleteLastWord = () => {
-    const removeLastWord = (text) => text.replace(/\s*\S+\s*$/, '').replace(/\s+$/, ' ');
-    const currentText = builtSentence || translatedText;
-    const next = removeLastWord(currentText).trimStart();
-    setBuiltSentence(next);
-    setTranslatedText(next);
-    fetchWordSuggestions(next);
-  };
-  
-  // CLEAR TEXT Function:
-  // How it works: Delete everything and start fresh
-  // Sets builtSentence to empty string ''
-  const handleClearText = () => {
-    const finalSentence = (builtSentence || translatedText).trim();
-    if (finalSentence) {
-      setSentenceHistory(prev => [
-        {
-          text: finalSentence,
-          createdAt: new Date().toISOString()
-        },
-        ...prev.filter(item => item.text !== finalSentence)
-      ].slice(0, 8));
+    if (practiceStreak > 0 && practiceStreak % 5 === 0) {
+      setPracticeBurst(true);
+      pushToast('Five correct signs in a row.', 'success');
+      window.setTimeout(() => setPracticeBurst(false), 1800);
     }
 
-    setBuiltSentence('');
-    setTranslatedText('');
-    setPrediction('');
-    setConfidence(0);
-    setWordSuggestions([]);
-    setPhraseSuggestions(QUICK_PHRASES.slice(0, 4));
-  };
-  
-  // ADD DETECTED LETTER to Word Builder:
-  // This function is called when a new ASL sign is detected
-  // It adds the letter to our sentence
-  const addLetterToSentence = (letter) => {
-    setBuiltSentence(prev => {
-      const shouldAutoSpace = prev.length > 0 && !prev.endsWith(' ') && /[aeiou]/i.test(letter) && /[^aeiou\s]{3,}$/i.test(prev);
-      return shouldAutoSpace ? `${prev} ${letter}` : `${prev}${letter}`;
+    if (practiceCompleted.has(practiceLetter)) {
+      setPracticeLetter(choosePracticeLetter(practiceDifficulty, practiceCompleted));
+      if (practiceDifficulty === 'hard') {
+        setPracticeTimer(5);
+      }
+    }
+  }, [isPracticeMode, practiceCompleted, practiceDifficulty, practiceLetter, practiceStreak]);
+
+  useEffect(() => {
+    if (!isPracticeMode && practiceScore === 0 && practiceStreak === 0) {
+      return;
+    }
+
+    savePracticeSnapshot(practiceSessionIdRef.current, {
+      score: practiceScore,
+      streak: practiceStreak,
+      difficulty: practiceDifficulty,
+      practiceMode: isPracticeMode,
+      completedLetters: Array.from(practiceCompleted),
+      updatedClientAt: new Date().toISOString()
     });
+  }, [isPracticeMode, practiceCompleted, practiceDifficulty, practiceScore, practiceStreak]);
+
+  // FEATURE 6: browser-native speech recognition for reverse mode input.
+  useEffect(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      return undefined;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    recognition.onresult = (event) => {
+      let nextText = '';
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        nextText += event.results[index][0].transcript;
+      }
+      startTransition(() => setReverseInput(nextText));
+    };
+    recognition.onerror = () => {
+      setReverseListening(false);
+      pushToast('Speech recognition stopped unexpectedly.', 'error');
+    };
+    recognition.onend = () => {
+      setReverseListening(false);
+    };
+
+    recognitionRef.current = recognition;
+    return () => {
+      recognition.stop();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!reversePlaying || reverseSequence.length === 0) {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setReverseIndex((prev) => {
+        if (prev >= reverseSequence.length - 1) {
+          return 0;
+        }
+        return prev + 1;
+      });
+    }, 1000 / reverseSpeed);
+
+    return () => window.clearTimeout(timeout);
+  }, [reverseIndex, reversePlaying, reverseSequence, reverseSpeed]);
+
+  useEffect(() => {
+    setReverseIndex(0);
+  }, [reverseSequence]);
+
+  const handleCommitWord = async () => {
+    const normalizedWord = normalizeSignedText(displayedWord);
+    if (!normalizedWord) {
+      pushToast('No current word to commit.', 'info');
+      return;
+    }
+
+    const nextSentence = normalizeSignedText(
+      sentenceText ? `${sentenceText} ${normalizedWord}` : normalizedWord
+    );
+    setSentenceText(nextSentence);
+    setSentenceHistory((prev) => [
+      { text: nextSentence, createdAt: new Date().toISOString() },
+      ...prev
+    ].slice(0, 10));
+    setCurrentWord('');
+    setCorrectedWord('');
+    setWordSuggestions([]);
+    setUrduTranslation('');
+
+    saveConversationEntry({
+      text: normalizedWord,
+      sentenceSnapshot: nextSentence,
+      speaker: 'Signer',
+      mode: 'ASL',
+      entryType: 'word_commit',
+      timestamp: new Date().toISOString()
+    });
+
+    if (autoSpeakEnabled && speechSupported) {
+      try {
+        speakText(normalizedWord, { rate: 0.9 });
+      } catch (error) {
+        pushToast(error.message, 'error');
+      }
+    }
   };
 
-  const restoreHistoryItem = (text) => {
-    const next = `${text.trim()} `;
-    setBuiltSentence(next);
-    setTranslatedText(next);
-    fetchWordSuggestions(next);
+  const handleClearWord = () => {
+    setCurrentWord('');
+    setCorrectedWord('');
+    setWordSuggestions([]);
   };
 
-  const getSmartSuggestions = () => {
-    const currentText = (builtSentence || translatedText).trim().toLowerCase();
-    const currentWord = currentText.split(/\s+/).pop() || '';
-    const fallback = ['hello', 'help', 'thank', 'yes', 'no'];
+  const handleBackspace = () => {
+    if (currentWord) {
+      const nextWord = currentWord.slice(0, -1);
+      setCurrentWord(nextWord);
+      requestSuggestions(nextWord);
+      return;
+    }
 
-    const combined = [...wordSuggestions, ...fallback].filter(Boolean);
-    const unique = [...new Set(combined.map(item => item.toLowerCase()))];
-
-    if (!currentWord) return unique.slice(0, 5);
-    return unique
-      .sort((a, b) => {
-        const aStarts = a.startsWith(currentWord) ? 0 : 1;
-        const bStarts = b.startsWith(currentWord) ? 0 : 1;
-        return aStarts - bStarts || a.length - b.length;
-      })
-      .slice(0, 5);
+    if (sentenceText) {
+      setSentenceText((prev) => prev.slice(0, -1).trimEnd());
+    }
   };
 
-  const getSmartPhraseSuggestions = () => {
-    const currentText = (builtSentence || translatedText).trim().toLowerCase();
-    const combined = [...phraseSuggestions, ...QUICK_PHRASES].filter(Boolean);
-    const unique = [...new Set(combined.map(item => item.trim()))];
+  const handleApplySuggestion = (suggestion) => {
+    const normalizedSuggestion = normalizeSignedText(suggestion).toLowerCase();
+    setCurrentWord(normalizedSuggestion);
+    setCorrectedWord(normalizedSuggestion);
+    requestSuggestions(normalizedSuggestion);
+  };
 
-    if (!currentText) return unique.slice(0, 6);
-    return unique
-      .sort((a, b) => {
-        const aLower = a.toLowerCase();
-        const bLower = b.toLowerCase();
-        const aRank = aLower.startsWith(currentText) ? 0 : aLower.includes(currentText) ? 1 : 2;
-        const bRank = bLower.startsWith(currentText) ? 0 : bLower.includes(currentText) ? 1 : 2;
-        return aRank - bRank || a.length - b.length;
-      })
-      .slice(0, 6);
+  const handleSpeak = () => {
+    const textToSpeak = displayedWord || currentSentence;
+    if (!speechSupported) {
+      pushToast('Speech synthesis is not available in this browser.', 'error');
+      return;
+    }
+    if (!textToSpeak) {
+      pushToast('Nothing to speak yet.', 'info');
+      return;
+    }
+
+    try {
+      speakText(textToSpeak);
+    } catch (error) {
+      pushToast(error.message, 'error');
+    }
+  };
+
+  const handleTranslateUrdu = async () => {
+    const sourceSentence = normalizeSignedText(currentSentence);
+    if (!sourceSentence) {
+      pushToast('Build a sentence before translating.', 'info');
+      return;
+    }
+
+    if (!geminiApiKey) {
+      pushToast('Enter a Gemini API key to enable Roman Urdu translation.', 'error');
+      return;
+    }
+
+    setIsUrduLoading(true);
+    try {
+      const translation = await translateSentenceToRomanUrdu(sourceSentence, geminiApiKey);
+      startTransition(() => setUrduTranslation(translation));
+    } catch (error) {
+      console.error('Roman Urdu translation failed.', error);
+      pushToast(error.message || 'Roman Urdu translation failed.', 'error');
+      startTransition(() => setUrduTranslation(''));
+    } finally {
+      setIsUrduLoading(false);
+    }
+  };
+
+  const handleSpeakUrdu = () => {
+    if (!urduTranslation) {
+      pushToast('No Roman Urdu translation available.', 'info');
+      return;
+    }
+
+    const urduVoice =
+      voices.find((voice) => voice.lang?.toLowerCase().includes('ur')) ||
+      voices.find((voice) => voice.name?.toLowerCase().includes('pakistan'));
+
+    try {
+      speakText(urduTranslation, { voice: urduVoice || selectedVoice, rate: 0.88 });
+    } catch (error) {
+      pushToast(error.message, 'error');
+    }
+  };
+
+  const handleToggleRecognition = () => {
+    const recognition = recognitionRef.current;
+    if (!recognition) {
+      pushToast('Speech recognition is not available in this browser.', 'error');
+      return;
+    }
+
+    if (reverseListening) {
+      recognition.stop();
+      setReverseListening(false);
+      return;
+    }
+
+    recognition.start();
+    setReverseListening(true);
+  };
+
+  useEffect(() => {
+    controlActionHandlerRef.current = (action) => {
+      if (action === 'space') {
+        handleCommitWord();
+        pushToast('Secondary hand gesture: SPACE', 'success');
+      } else if (action === 'clear') {
+        handleClearWord();
+        pushToast('Secondary hand gesture: CLEAR', 'info');
+      } else if (action === 'speak') {
+        handleSpeak();
+        pushToast('Secondary hand gesture: SPEAK', 'info');
+      }
+    };
+  });
+
+  const renderReverseCard = (letter, index) => {
+    if (letter === ' ') {
+      return (
+        <div
+          key={`space-${index}`}
+          className={`flex h-40 items-center justify-center rounded-3xl border border-dashed ${
+            index === reverseIndex && reversePlaying
+              ? 'border-[#00ff88] bg-[#00ff88]/10 text-[#00ff88]'
+              : 'border-slate-700 bg-slate-900/60 text-slate-400'
+          }`}
+        >
+          SPACE
+        </div>
+      );
+    }
+
+    const card = getReferenceCard(letter);
+    const isActive = index === reverseIndex;
+    return (
+      <div
+        key={`${letter}-${index}`}
+        className={`rounded-3xl border p-3 transition ${
+          isActive
+            ? 'border-[#00ff88] bg-[#00ff88]/10 shadow-[0_0_28px_rgba(0,255,136,0.18)]'
+            : 'border-slate-800 bg-slate-950/80'
+        }`}
+      >
+        <img
+          src={card.image}
+          alt={`ASL sign card for ${letter}`}
+          className="h-40 w-full rounded-2xl object-cover"
+        />
+        <div className="mt-3 flex items-center justify-between text-sm">
+          <span className="font-semibold text-white">{letter}</span>
+          <span className={isActive ? 'text-[#00ff88]' : 'text-slate-400'}>
+            {isActive ? 'Active' : 'Queued'}
+          </span>
+        </div>
+      </div>
+    );
   };
 
   return (
-    <div className="space-y-6">
-      {/* Connection Status Banner */}
-      {connectionStatus === 'disconnected' && error && (
-        <div className="bg-red-500 text-white p-4 rounded-lg shadow-lg flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <span className="text-2xl">⚠️</span>
-            <div>
-              <p className="font-semibold">Backend Connection Error</p>
-              <p className="text-sm">{error}</p>
+    <div className="space-y-6 text-slate-100">
+      <ToastStack toasts={toasts} />
+
+      <section className="overflow-hidden rounded-[2rem] border border-[#00ff88]/20 bg-[radial-gradient(circle_at_top_left,_rgba(0,255,136,0.14),_transparent_28%),linear-gradient(145deg,#020617,#08130f_55%,#03120c)] p-6 shadow-2xl">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl space-y-3">
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#00ff88]/30 bg-[#00ff88]/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[#8fffc7]">
+              <Sparkles size={14} />
+              AlphaHand Live Communication
+            </div>
+            <h2 className="text-4xl font-black tracking-tight text-white md:text-5xl">
+              Real-time ASL detection with word building, speech, practice, Urdu, and reverse playback.
+            </h2>
+            <p className="max-w-2xl text-sm text-slate-300 md:text-base">
+              The webcam stays central, prediction logic stays intact, and AI helpers remain optional with graceful fallback.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:w-[28rem]">
+            <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-4">
+              <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Prediction Service</p>
+              <p className={`mt-2 text-lg font-semibold ${connectionStatus === 'connected' ? 'text-[#00ff88]' : 'text-red-300'}`}>
+                {connectionStatus === 'connected' ? 'Connected' : 'Offline'}
+              </p>
+            </div>
+            <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-4">
+              <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Session</p>
+              <p className="mt-2 truncate font-mono text-sm text-slate-200">{sessionId}</p>
+            </div>
+            <div className="rounded-3xl border border-slate-800 bg-slate-950/80 p-4 sm:col-span-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Backend Health</p>
+                  <p className={`mt-2 text-lg font-semibold ${
+                    backendHealth.status === 'healthy'
+                      ? 'text-[#00ff88]'
+                      : backendHealth.status === 'degraded'
+                        ? 'text-amber-300'
+                        : backendHealth.status === 'checking'
+                          ? 'text-sky-300'
+                          : 'text-red-300'
+                  }`}>
+                    {backendHealth.status}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-300">{backendHealth.message}</p>
+                  <p className="mt-2 break-all font-mono text-xs text-slate-500">{API_URL}</p>
+                </div>
+                <button
+                  onClick={checkBackendHealth}
+                  className="rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm font-semibold text-slate-100 hover:border-slate-500"
+                >
+                  Recheck Backend
+                </button>
+              </div>
             </div>
           </div>
-          <button onClick={checkConnection} className="bg-white text-red-500 px-4 py-2 rounded-lg font-semibold hover:bg-gray-100">
-            Retry
-          </button>
         </div>
+      </section>
+
+      <div className="flex flex-wrap gap-3">
+        <PillButton active={activeTab === 'sign'} onClick={() => setActiveTab('sign')}>
+          Sign to Speech
+        </PillButton>
+        {liveFeatureToggles.reverseMode && (
+          <PillButton active={activeTab === 'reverse'} onClick={() => setActiveTab('reverse')}>
+            Text to Sign
+          </PillButton>
+        )}
+      </div>
+
+      {activeTab === 'sign' ? (
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(20rem,0.9fr)]">
+          <FeatureBoundary title="Live Camera">
+            <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Camera Surface</p>
+                  <h3 className="mt-1 text-2xl font-bold text-white">ASL detection viewport</h3>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <PillButton active={showLandmarks} onClick={() => setShowLandmarks((prev) => !prev)}>
+                    <Hand size={14} className="mr-1 inline" />
+                    Landmarks
+                  </PillButton>
+                  {liveFeatureToggles.debugPanel && (
+                    <PillButton active={showDebugPanel} onClick={() => setShowDebugPanel((prev) => !prev)}>
+                      <Bot size={14} className="mr-1 inline" />
+                      Debug
+                    </PillButton>
+                  )}
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden rounded-[1.5rem] border border-slate-800 bg-black">
+                <video
+                  ref={videoRef}
+                  muted
+                  playsInline
+                  className="aspect-video w-full scale-x-[-1] object-cover"
+                />
+                <canvas
+                  ref={overlayRef}
+                  className="pointer-events-none absolute inset-0 h-full w-full scale-x-[-1]"
+                />
+
+                <div className="absolute left-4 top-4 max-w-xs rounded-3xl border border-slate-700/80 bg-slate-950/85 p-4 backdrop-blur">
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Current Prediction</p>
+                  <div className="mt-2 flex items-end gap-3">
+                    <span className="text-5xl font-black text-white">
+                      {predictionState.stablePrediction || predictionState.rawPrediction || '...'}
+                    </span>
+                    <span className="pb-2 text-sm font-semibold" style={{ color: confidenceTone.color }}>
+                      {confidenceTone.label}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-slate-800">
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{
+                        width: `${Math.max(0, Math.min(predictionState.confidence * 100, 100))}%`,
+                        background: `linear-gradient(90deg, ${confidenceTone.color}, #69ffbe)`
+                      }}
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-xs text-slate-300">
+                    <span>{Math.round(predictionState.confidence * 100)}%</span>
+                    <span>
+                      Hold {Math.round(holdProgress * 100)}% of {HOLD_CONFIRM_MS / 1000}s
+                    </span>
+                  </div>
+                </div>
+
+                {isPracticeMode && liveFeatureToggles.practiceMode && (
+                  <div className="absolute bottom-4 left-4 right-4 rounded-[1.5rem] border border-[#00ff88]/30 bg-slate-950/90 p-4 backdrop-blur">
+                    <div className="flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.25em] text-[#6cffb0]">Practice Mode</p>
+                        <h4 className="text-3xl font-black text-white">{practiceLetter}</h4>
+                        <p className="text-sm text-slate-300">Match the target sign and hold for confirmation.</p>
+                      </div>
+                      <div className="flex gap-5 text-sm">
+                        <div>
+                          <p className="text-slate-500">Score</p>
+                          <p className="text-xl font-bold text-white">{practiceScore}</p>
+                        </div>
+                        <div>
+                          <p className="text-slate-500">Streak</p>
+                          <p className="text-xl font-bold text-white">{practiceStreak}</p>
+                        </div>
+                        {practiceDifficulty === 'hard' && (
+                          <div>
+                            <p className="text-slate-500">Timer</p>
+                            <p className={`text-xl font-bold ${practiceTimer <= 2 ? 'text-red-300' : 'text-white'}`}>
+                              {practiceTimer}s
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {practiceBurst && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[#00ff88]/10">
+                    <div className="rounded-full border border-[#00ff88]/40 bg-[#00ff88]/20 px-8 py-4 text-2xl font-black text-[#b8ffda] shadow-[0_0_36px_rgba(0,255,136,0.35)] animate-pulse">
+                      5 Sign Streak
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button
+                  onClick={() => setIsDetecting((prev) => !prev)}
+                  className={`rounded-2xl px-5 py-3 font-semibold transition ${
+                    isDetecting
+                      ? 'bg-red-500 text-white hover:bg-red-400'
+                      : 'bg-[#00ff88] text-slate-950 hover:bg-[#5cffaf]'
+                  }`}
+                >
+                  <Camera size={18} className="mr-2 inline" />
+                  {isDetecting ? 'Stop Detection' : 'Start Detection'}
+                </button>
+                <button
+                  onClick={() => {
+                    setSentenceText('');
+                    setCurrentWord('');
+                    setCorrectedWord('');
+                    setWordSuggestions([]);
+                    setUrduTranslation('');
+                  }}
+                  className="rounded-2xl border border-slate-700 bg-slate-900 px-5 py-3 font-semibold text-slate-100 hover:border-slate-500"
+                >
+                  <RefreshCcw size={18} className="mr-2 inline" />
+                  Reset Session
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-3">
+                <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Camera Status</p>
+                  <p className="mt-2 text-lg font-semibold capitalize text-white">{cameraStatus}</p>
+                </div>
+                <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Stability</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {predictionState.stability.ready
+                      ? `${predictionState.stability.hits}/${Math.max(
+                          predictionState.stability.window,
+                          predictionState.stability.hits
+                        )} stable`
+                      : `${Math.round((predictionState.stability.ratio || 0) * 100)}%`}
+                  </p>
+                </div>
+                <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Confidence</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {(predictionState.confidence * 100).toFixed(0)}%
+                  </p>
+                </div>
+              </div>
+
+              {liveFeatureToggles.qualityWarnings && (
+                <>
+                  <div className="mt-4 grid gap-4 md:grid-cols-3">
+                    <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Lighting</p>
+                      <p className={`mt-2 text-lg font-semibold ${visionQuality.lighting === 'low' ? 'text-amber-300' : 'text-white'}`}>
+                        {visionQuality.lighting} ({visionQuality.brightness})
+                      </p>
+                    </div>
+                    <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Hands</p>
+                      <p className="mt-2 text-lg font-semibold text-white">{visionQuality.handCount}</p>
+                    </div>
+                    <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Occlusion</p>
+                      <p className="mt-2 text-lg font-semibold capitalize text-white">{visionQuality.occlusion}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-50">
+                    <AlertTriangle size={16} className="mr-2 inline" />
+                    {visionQuality.hint}
+                  </div>
+                </>
+              )}
+
+              {detectionError && (
+                <div className="mt-4 rounded-2xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+                  {detectionError}
+                </div>
+              )}
+            </section>
+          </FeatureBoundary>
+
+          <div className="space-y-6">
+            {liveFeatureToggles.wordBuilder && (
+              <FeatureBoundary title="Word Builder">
+                <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Feature 1</p>
+                      <h3 className="mt-1 text-2xl font-bold text-white">Word builder</h3>
+                    </div>
+                    <div className="w-full max-w-sm">
+                      <label className="mb-2 block text-xs uppercase tracking-[0.25em] text-slate-500">
+                        Gemini API Key
+                      </label>
+                      <input
+                        type="password"
+                        value={geminiApiKey}
+                        onChange={(event) => setGeminiApiKey(event.target.value)}
+                        placeholder="Stored in sessionStorage"
+                        className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-[#00ff88]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-5 rounded-[1.75rem] border border-[#00ff88]/20 bg-[linear-gradient(180deg,rgba(0,255,136,0.10),rgba(2,6,23,0.3))] p-5">
+                    <p className="text-xs uppercase tracking-[0.25em] text-[#8fffc7]">Current Word</p>
+                    <p className="mt-3 min-h-[4rem] break-words text-4xl font-black tracking-[0.2em] text-white">
+                      {displayedWord || '_'}
+                    </p>
+                    {currentWord && correctedWord && currentWord !== correctedWord && (
+                      <p className="mt-2 text-sm text-[#8fffc7]">
+                        Auto-corrected from <span className="font-mono text-slate-400">{currentWord}</span> to <span className="font-mono text-white">{correctedWord}</span>
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="mt-4 rounded-[1.75rem] border border-slate-800 bg-slate-900/80 p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Sentence Output</p>
+                        <p className="mt-2 min-h-[3rem] break-words text-lg font-medium text-slate-100">
+                          {currentSentence || 'Committed words appear here.'}
+                        </p>
+                      </div>
+                      <div className="text-right text-sm text-slate-400">
+                        <div>{currentSentence ? currentSentence.split(/\s+/).filter(Boolean).length : 0} words</div>
+                        <div>{currentSentence.length} chars</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      onClick={handleCommitWord}
+                      className="rounded-2xl bg-[#00ff88] px-4 py-3 font-semibold text-slate-950 hover:bg-[#5cffaf]"
+                    >
+                      SPACE
+                    </button>
+                    <button
+                      onClick={handleClearWord}
+                      className="rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 font-semibold text-slate-100 hover:border-slate-500"
+                    >
+                      CLEAR
+                    </button>
+                    <button
+                      onClick={handleBackspace}
+                      className="rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 font-semibold text-slate-100 hover:border-slate-500"
+                    >
+                      Backspace
+                    </button>
+                  </div>
+
+                  <div className="mt-5">
+                    <div className="mb-3 flex items-center gap-2">
+                      <Sparkles size={16} className="text-[#00ff88]" />
+                      <p className="text-sm font-semibold text-white">Smart autocomplete</p>
+                      {isCorrectionLoading && (
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-[#45c4ff] border-t-transparent" />
+                      )}
+                      {isSuggestionLoading && (
+                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-[#00ff88] border-t-transparent" />
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(wordSuggestions.length ? wordSuggestions : QUICK_PHRASES.slice(0, 3)).map((suggestion) => (
+                        <button
+                          key={suggestion}
+                          onClick={() => handleApplySuggestion(suggestion)}
+                          className="rounded-full border border-[#00ff88]/25 bg-[#00ff88]/10 px-4 py-2 text-sm font-semibold capitalize text-[#b8ffda] hover:border-[#00ff88]/50 hover:bg-[#00ff88]/20"
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              </FeatureBoundary>
+            )}
+
+            {liveFeatureToggles.textToSpeech && (
+              <FeatureBoundary title="Text To Speech">
+                <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Feature 2</p>
+                  <h3 className="mt-1 text-2xl font-bold text-white">Text-to-speech</h3>
+
+                  <div className="mt-5 space-y-4">
+                    <div>
+                      <label className="mb-2 block text-xs uppercase tracking-[0.25em] text-slate-500">
+                        Voice Selector
+                      </label>
+                      <select
+                        value={selectedVoiceURI}
+                        onChange={(event) => setSelectedVoiceURI(event.target.value)}
+                        className="w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none focus:border-[#00ff88]"
+                      >
+                        {voices.map((voice) => (
+                          <option key={voice.voiceURI} value={voice.voiceURI}>
+                            {voice.name} ({voice.lang})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        onClick={isSpeaking ? stopSpeaking : handleSpeak}
+                        className="rounded-2xl bg-[#00ff88] px-4 py-3 font-semibold text-slate-950 hover:bg-[#5cffaf]"
+                      >
+                        {isSpeaking ? <VolumeX size={18} className="mr-2 inline" /> : <Volume2 size={18} className="mr-2 inline" />}
+                        {isSpeaking ? 'Stop' : 'Speak'}
+                      </button>
+                      <PillButton active={autoSpeakEnabled} onClick={() => setAutoSpeakEnabled((prev) => !prev)}>
+                        Auto-speak on SPACE
+                      </PillButton>
+                    </div>
+
+                    {!speechSupported && (
+                      <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                        Your browser does not expose `speechSynthesis`.
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </FeatureBoundary>
+            )}
+
+            {liveFeatureToggles.confidencePanel && (
+              <FeatureBoundary title="Confidence Panel">
+                <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+                  <div className="flex items-center gap-2">
+                    <Gauge size={18} className="text-[#00ff88]" />
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Feature 3</p>
+                      <h3 className="text-2xl font-bold text-white">Confidence and predictions</h3>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 space-y-3">
+                    {topPredictions.length > 0 ? (
+                      topPredictions.map((item, index) => {
+                        const label = item.label || item.prediction || '?';
+                        const score = Number(item.confidence || 0);
+                        return (
+                          <div key={`${label}-${index}`} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+                            <div className="mb-2 flex items-center justify-between text-sm">
+                              <span className="font-semibold text-white">{label}</span>
+                              <span className="text-slate-400">{(score * 100).toFixed(0)}%</span>
+                            </div>
+                            <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                              <div
+                                className="h-full rounded-full"
+                                style={{
+                                  width: `${Math.max(0, Math.min(score * 100, 100))}%`,
+                                  background: index === 0 ? '#00ff88' : index === 1 ? '#45c4ff' : '#f9d65c'
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-400">
+                        Top predictions will appear once the detector receives a confident hand sign.
+                      </div>
+                    )}
+                  </div>
+
+                  {showDebugPanel && liveFeatureToggles.debugPanel && (
+                    <div className="mt-5 rounded-2xl border border-slate-800 bg-black/70 p-4 font-mono text-xs text-[#9df6cb]">
+                      <p className="mb-2 text-sm font-semibold text-white">Debug Coordinates</p>
+                      <p className="mb-3 text-slate-400">Showing the first five landmarks.</p>
+                      <pre className="overflow-auto whitespace-pre-wrap">
+                        {JSON.stringify(lastLandmarks.slice(0, 5), null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </section>
+              </FeatureBoundary>
+            )}
+
+            {liveFeatureToggles.practiceMode && (
+              <FeatureBoundary title="Practice Mode">
+                <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Feature 4</p>
+                      <h3 className="text-2xl font-bold text-white">Practice mode</h3>
+                    </div>
+                    <PillButton active={isPracticeMode} onClick={() => setIsPracticeMode((prev) => !prev)}>
+                      {isPracticeMode ? 'Enabled' : 'Disabled'}
+                    </PillButton>
+                  </div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-[10rem_minmax(0,1fr)]">
+                    <img
+                      src={referenceCard.image}
+                      alt={`Reference card for ${practiceLetter}`}
+                      className="h-40 w-full rounded-3xl border border-slate-800 object-cover"
+                    />
+                    <div className="space-y-4">
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <PillButton
+                          active={practiceDifficulty === 'easy'}
+                          onClick={() => setPracticeDifficulty('easy')}
+                        >
+                          Easy
+                        </PillButton>
+                        <PillButton
+                          active={practiceDifficulty === 'medium'}
+                          onClick={() => setPracticeDifficulty('medium')}
+                        >
+                          Medium
+                        </PillButton>
+                        <PillButton
+                          active={practiceDifficulty === 'hard'}
+                          onClick={() => setPracticeDifficulty('hard')}
+                        >
+                          Hard (5s)
+                        </PillButton>
+                      </div>
+                      <div className="rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <p className="text-sm text-slate-400">Target Letter</p>
+                            <p className="text-4xl font-black text-white">{practiceLetter}</p>
+                          </div>
+                          <button
+                            onClick={() => setPracticeLetter(choosePracticeLetter(practiceDifficulty, practiceCompleted))}
+                            className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-slate-100 hover:border-slate-500"
+                          >
+                            New Challenge
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </FeatureBoundary>
+            )}
+
+            {liveFeatureToggles.urduMode && (
+              <FeatureBoundary title="Urdu Mode">
+                <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+                  <div className="flex items-center gap-2">
+                    <Languages size={18} className="text-[#00ff88]" />
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Feature 5</p>
+                      <h3 className="text-2xl font-bold text-white">Roman Urdu mode</h3>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <button
+                      onClick={handleTranslateUrdu}
+                      className="rounded-2xl bg-[#00ff88] px-4 py-3 font-semibold text-slate-950 hover:bg-[#5cffaf]"
+                    >
+                      Translate to Urdu (Roman Urdu)
+                    </button>
+                    <button
+                      onClick={handleSpeakUrdu}
+                      className="rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 font-semibold text-slate-100 hover:border-slate-500"
+                    >
+                      Speak Urdu
+                    </button>
+                  </div>
+
+                  <div className="mt-4 rounded-3xl border border-slate-800 bg-slate-900/70 p-4">
+                    {isUrduLoading ? (
+                      <div className="flex items-center gap-3 text-sm text-slate-300">
+                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-[#00ff88] border-t-transparent" />
+                        Translating with Gemini...
+                      </div>
+                    ) : (
+                      <p className="min-h-[3rem] text-lg text-slate-100">
+                        {urduTranslation || 'Roman Urdu translation will appear here.'}
+                      </p>
+                    )}
+                  </div>
+                </section>
+              </FeatureBoundary>
+            )}
+
+            <FeatureBoundary title="History">
+              <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+                <h3 className="text-xl font-bold text-white">Recent letters and sentences</h3>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {letterHistory.length > 0 ? (
+                    letterHistory.slice(0, 12).map((item, index) => (
+                      <span
+                        key={`${item.createdAt}-${index}`}
+                        className="rounded-full border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200"
+                      >
+                        {item.letter} · {Math.round((item.confidence || 0) * 100)}%
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-slate-500">No confirmed letters yet.</span>
+                  )}
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  {sentenceHistory.length > 0 ? (
+                    sentenceHistory.slice(0, 4).map((item) => (
+                      <button
+                        key={item.createdAt}
+                        onClick={() => {
+                          setSentenceText(item.text);
+                          setCurrentWord('');
+                          setUrduTranslation('');
+                        }}
+                        className="w-full rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 text-left text-sm text-slate-200 hover:border-slate-600"
+                      >
+                        {item.text}
+                      </button>
+                    ))
+                  ) : (
+                    <p className="text-sm text-slate-500">Committed sentences will appear here.</p>
+                  )}
+                </div>
+              </section>
+            </FeatureBoundary>
+          </div>
+        </div>
+      ) : (
+        <FeatureBoundary title="Reverse Mode">
+          <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 shadow-xl">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Feature 6</p>
+                <h3 className="text-3xl font-bold text-white">Reverse mode: text to sign</h3>
+                <p className="mt-2 max-w-2xl text-sm text-slate-400">
+                  Type or dictate a sentence, then play the sign cards letter-by-letter.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <button
+                  onClick={handleToggleRecognition}
+                  className={`rounded-2xl px-4 py-3 font-semibold transition ${
+                    reverseListening
+                      ? 'bg-red-500 text-white hover:bg-red-400'
+                      : 'bg-[#00ff88] text-slate-950 hover:bg-[#5cffaf]'
+                  }`}
+                >
+                  {reverseListening ? <MicOff size={18} className="mr-2 inline" /> : <Mic size={18} className="mr-2 inline" />}
+                  {reverseListening ? 'Stop Mic' : 'Speech Input'}
+                </button>
+                <button
+                  onClick={() => setReversePlaying((prev) => !prev)}
+                  className="rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 font-semibold text-slate-100 hover:border-slate-500"
+                >
+                  {reversePlaying ? <Pause size={18} className="mr-2 inline" /> : <Play size={18} className="mr-2 inline" />}
+                  {reversePlaying ? 'Pause' : 'Play'}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.25fr)]">
+              <div className="space-y-5">
+                <div>
+                  <label className="mb-2 block text-xs uppercase tracking-[0.25em] text-slate-500">
+                    Input Text
+                  </label>
+                  <textarea
+                    value={reverseInput}
+                    onChange={(event) => setReverseInput(event.target.value)}
+                    rows={6}
+                    placeholder="Type a sentence for ASL playback"
+                    className="w-full rounded-[1.5rem] border border-slate-700 bg-slate-900 px-4 py-4 text-base text-slate-100 outline-none transition focus:border-[#00ff88]"
+                  />
+                </div>
+
+                <div className="rounded-[1.5rem] border border-slate-800 bg-slate-900/70 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Playback Speed</p>
+                      <p className="mt-1 text-xl font-semibold text-white">{reverseSpeed.toFixed(1)}x</p>
+                    </div>
+                    <input
+                      type="range"
+                      min={MIN_REVERSE_SPEED}
+                      max={MAX_REVERSE_SPEED}
+                      step="0.1"
+                      value={reverseSpeed}
+                      onChange={(event) => setReverseSpeed(Number(event.target.value))}
+                      className="w-full max-w-xs accent-[#00ff88]"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-[1.5rem] border border-slate-800 bg-slate-900/70 p-4">
+                  <p className="text-xs uppercase tracking-[0.25em] text-slate-500">Active Letter</p>
+                  <div className="mt-4 flex items-center gap-4">
+                    <img
+                      src={referenceCard.image}
+                      alt={`Reference card for ${referenceCard.letter}`}
+                      className="h-40 w-40 rounded-3xl border border-slate-800 object-cover"
+                    />
+                    <div>
+                      <p className="text-5xl font-black text-white">
+                        {reverseSequence[reverseIndex] || '-'}
+                      </p>
+                      <p className="mt-2 text-sm text-slate-400">
+                        Letters are highlighted in sequence while playback runs.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {reverseSequence.length > 0 ? (
+                  reverseSequence.map((letter, index) => renderReverseCard(letter, index))
+                ) : (
+                  <div className="col-span-full rounded-[1.5rem] border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center text-slate-400">
+                    Enter text to generate the ASL playback queue.
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        </FeatureBoundary>
       )}
 
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-3xl font-bold text-gray-800">Live ASL Detection</h2>
-          <div className="flex items-center space-x-2">
-            <div className={`w-3 h-3 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></div>
-            <span className="text-sm text-gray-600">{connectionStatus === 'connected' ? 'Connected' : 'Disconnected'}</span>
-          </div>
-        </div>
-        <p className="text-gray-600 mb-6">
-          Use your webcam to detect ASL alphabet signs in real-time
-        </p>
-
-        <div className="space-y-6">
-          {/* Camera Controls */}
-          <div className="flex space-x-4">
-            <button
-              onClick={() => setIsDetecting(!isDetecting)}
-              className={isDetecting ? 'bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-lg font-semibold transition-all' : 'btn-primary'}
-            >
-              {isDetecting ? 'Stop Detection' : 'Start Detection'}
-            </button>
-            
-            {/* TEXT-TO-SPEECH Toggle Button */}
-            <button 
-              onClick={() => setVoiceEnabled(!voiceEnabled)}
-              className={voiceEnabled ? 'bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-semibold transition-all' : 'bg-gray-400 hover:bg-gray-500 text-white px-6 py-3 rounded-lg font-semibold transition-all'}
-              title="Toggle voice ON or OFF"
-            >
-              🔊 Voice {voiceEnabled ? 'ON' : 'OFF'}
-            </button>
-            
-            {(translatedText || builtSentence) && (
-              <>
-                {/* Speak Button - uses Text-to-Speech */}
-                <button 
-                  onClick={handleSpeak} 
-                  className={isSpeaking ? 'bg-purple-500 text-white px-6 py-3 rounded-lg font-semibold' : 'btn-secondary'}
-                  disabled={isSpeaking}
-                >
-                  {isSpeaking ? '🔊 Speaking...' : '🎤 Speak Text'}
-                </button>
-                <button onClick={handleSaveToHistory} className="btn-secondary">
-                  💾 Save to History
-                </button>
-              </>
-            )}
-          </div>
-
-          {/* WORD BUILDER Controls */}
-          <div className="card bg-blue-50">
-            <h3 className="text-xl font-semibold mb-3 flex items-center">
-              ✍️ Word Builder Controls
-              <span className="ml-3 text-sm font-normal text-gray-600">
-                (Build sentences by adding letters, spaces, and corrections)
-              </span>
-            </h3>
-            <div className="flex flex-wrap gap-3">
-              <button 
-                onClick={handleAddSpace}
-                className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
-                title="Add a space between words"
-              >
-                ⎵ Add Space
-              </button>
-              <button 
-                onClick={handleBackspace}
-                className="bg-yellow-500 hover:bg-yellow-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
-                title="Delete the last character"
-              >
-                ⌫ Backspace
-              </button>
-              <button 
-                onClick={handleDeleteLastWord}
-                className="bg-orange-500 hover:bg-orange-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
-                title="Delete the last full word"
-              >
-                🧹 Delete Word
-              </button>
-              <button 
-                onClick={handleClearText}
-                className="bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-lg font-semibold transition-all"
-                title="Clear all text and start over"
-              >
-                🗑️ Clear All
-              </button>
-            </div>
-          </div>
-
-          {/* Video Feed */}
-          <div className="video-container">
-            <video ref={videoRef} className="hidden" autoPlay playsInline />
-            <canvas ref={canvasRef} className="w-full rounded-lg bg-black" style={{ minHeight: '400px' }} />
-            
-            {!isDetecting && (
-              <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-75 rounded-lg">
-                <div className="text-center text-white">
-                  <svg className="w-24 h-24 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                  <p className="text-xl font-semibold">Camera Off</p>
-                  <p className="text-sm text-gray-400 mt-2">Click "Start Detection" to begin</p>
-                </div>
-              </div>
-            )}
-            
-            {isDetecting && (
-              <div className="prediction-box">
-                <div className="text-2xl font-bold mb-2">Prediction: {prediction || '...'}</div>
-                
-                {/* ========================================
-                     CONFIDENCE METER:
-                     This shows HOW SURE the computer is about the detected sign
-                     - Confidence Score: A number from 0 to 100 (like a test score!)
-                     - 80-100% (Green) = Computer is very confident = HIGH accuracy
-                     - 50-79% (Yellow) = Computer is somewhat confident = MEDIUM accuracy  
-                     - 0-49% (Red) = Computer is unsure = LOW accuracy
-                     
-                     How it works:
-                     1. ML model gives a confidence number (0.0 to 1.0)
-                     2. We multiply by 100 to get percentage (0% to 100%)
-                     3. We change the color based on the percentage
-                     4. We show a progress bar that fills up based on confidence
-                     ======================================== */}
-                <div className="mb-2">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-semibold">
-                      Confidence Score 
-                      <span className="text-xs text-gray-500 ml-2">
-                        (How accurate is this prediction?)
-                      </span>
-                    </span>
-                    <span className="text-lg font-bold">
-                      {(confidence * 100).toFixed(1)}%
-                    </span>
-                  </div>
-                  
-                  {/* Progress bar background (gray) */}
-                  <div className="w-full h-8 bg-gray-300 rounded-full overflow-hidden border-2 border-gray-400">
-                    {/* Progress bar fill - changes color based on confidence */}
-                    <div 
-                      className="h-full transition-all duration-300 flex items-center justify-center text-white font-bold text-sm"
-                      style={{ 
-                        width: `${confidence * 100}%`,
-                        // Green if confidence >= 80%, Yellow if >= 50%, Red if < 50%
-                        backgroundColor: confidence >= 0.8 ? '#10b981' : confidence >= 0.5 ? '#fbbf24' : '#ef4444'
-                      }}
-                    >
-                      {confidence > 0.15 && `${(confidence * 100).toFixed(0)}%`}
-                    </div>
-                  </div>
-                  
-                  {/* Confidence level text */}
-                  <div className="text-center mt-1 text-sm font-semibold space-y-1">
-                    <div>
-                      {confidence >= 0.8 ? (
-                        <span className="text-green-600">✓ High Confidence - Very Accurate!</span>
-                      ) : confidence >= 0.5 ? (
-                        <span className="text-yellow-600">⚠ Medium Confidence - Fairly Accurate</span>
-                      ) : (
-                        <span className="text-red-600">✗ Low Confidence - May Not Be Accurate</span>
-                      )}
-                    </div>
-                    <div>
-                      {stability.ready ? (
-                        <span className="text-emerald-700">🧠 Stable across {stability.hits} frames</span>
-                      ) : prediction ? (
-                        <span className="text-blue-600">⏳ Stabilizing... {Math.round((stability.ratio || 0) * 100)}%</span>
-                      ) : (
-                        <span className="text-slate-500">Show a clear sign and hold briefly</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Translated Text - Enhanced Styling */}
-          <div className="card bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200 shadow-lg">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-2xl font-bold text-purple-800 flex items-center">
-                <span className="mr-2">📄</span> Translated Text
-              </h3>
-              {translatedText && (
-                <span className="text-sm bg-purple-200 text-purple-800 px-3 py-1 rounded-full font-semibold">
-                  {translatedText.length} characters
-                </span>
-              )}
-            </div>
-            <div className="bg-white p-6 rounded-xl min-h-[120px] shadow-inner border-2 border-purple-100 relative overflow-auto max-h-[200px]">
-              {translatedText ? (
-                <p className="text-2xl font-medium leading-relaxed text-gray-800 tracking-wide break-words">
-                  {translatedText}
-                </p>
-              ) : (
-                <p className="text-xl text-gray-400 italic text-center mt-4">
-                  ✋ Start detecting to see translations appear here...
-                </p>
-              )}
-            </div>
-            {translatedText && (
-              <div className="mt-3 flex items-center justify-between text-sm text-purple-600">
-                <span className="flex items-center">
-                  <span className="mr-1">💬</span>
-                  <span className="font-medium">Auto-detected letters are stored here</span>
-                </span>
-                <span className="text-gray-500">
-                  Words: {translatedText.trim().split(/\s+/).filter(w => w.length > 0).length}
-                </span>
-              </div>
-            )}
-          </div>
-          
-          {/* ========================================
-               WORD BUILDER Display:
-               Shows the full sentence being built from detected letters
-               This is where all the letters come together to form words!
-               ======================================== */}
-          <div className="card bg-gradient-to-br from-emerald-50 to-lime-50 border-4 border-emerald-300 shadow-lg">
-            <h3 className="text-2xl font-bold mb-3 flex items-center text-emerald-900">
-              📝 Word Builder - Your Complete Sentence
-              <span className="ml-3 text-sm font-normal text-slate-600">
-                (Each detected letter is added here automatically)
-              </span>
-            </h3>
-            <div className="bg-white p-6 rounded-lg min-h-[120px] border-2 border-emerald-400 shadow-inner">
-              {builtSentence ? (
-                <p className="text-2xl font-mono font-semibold text-slate-900 tracking-wide break-words leading-relaxed">
-                  {builtSentence}
-                </p>
-              ) : (
-                <p className="text-xl font-medium text-emerald-800">
-                  Start signing to build your sentence...
-                </p>
-              )}
-            </div>
-            <div className="mt-3 text-sm text-slate-800 bg-white p-3 rounded-lg">
-              <strong>💡 How Word Builder Works:</strong>
-              <ul className="list-disc list-inside mt-2 space-y-1">
-                <li><strong>Detected letters</strong> are automatically added to your sentence</li>
-                <li>Use <strong>"Add Space"</strong> button to separate words</li>
-                <li>Use <strong>"Backspace"</strong> to fix mistakes (removes last letter)</li>
-                <li>Use <strong>"Clear All"</strong> to start over</li>
-                <li>Click <strong>"Speak Text"</strong> to hear your sentence read aloud!</li>
-              </ul>
-            </div>
-          </div>
-
-          {/* Word Suggestions */}
-          {getSmartSuggestions().length > 0 && (
-            <div className="card bg-blue-50">
-              <h3 className="text-xl font-semibold mb-3 text-blue-900">🧠 Smart Word Suggestions:</h3>
-              <p className="text-sm text-slate-600 mb-3">Suggestions are prioritized based on your current partial word.</p>
-              <div className="flex flex-wrap gap-2">
-                {getSmartSuggestions().map((word, index) => (
-                  <button
-                    key={`${word}-${index}`}
-                    onClick={() => applySuggestion(word)}
-                    className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors capitalize"
-                  >
-                    {word}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {getSmartPhraseSuggestions().length > 0 && (
-            <div className="card bg-emerald-50 border border-emerald-200">
-              <h3 className="text-xl font-semibold mb-3 text-emerald-900">⚡ Quick Phrases & Sentence Starters</h3>
-              <p className="text-sm text-slate-600 mb-3">Tap a phrase to fill the sentence instantly and speed up communication.</p>
-              <div className="flex flex-wrap gap-2">
-                {getSmartPhraseSuggestions().map((phrase, index) => (
-                  <button
-                    key={`${phrase}-${index}`}
-                    onClick={() => applyPhrase(phrase)}
-                    className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg transition-colors"
-                  >
-                    {phrase}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {sentenceHistory.length > 0 && (
-            <div className="card bg-slate-50 border border-slate-200">
-              <h3 className="text-xl font-semibold mb-3 text-slate-800">🕘 Sentence History</h3>
-              <div className="space-y-2">
-                {sentenceHistory.map((item, index) => (
-                  <button
-                    key={`${item.createdAt}-${index}`}
-                    onClick={() => restoreHistoryItem(item.text)}
-                    className="w-full text-left bg-white hover:bg-slate-100 border border-slate-200 rounded-lg px-4 py-3 transition-colors"
-                  >
-                    <div className="font-medium text-slate-900 break-words">{item.text}</div>
-                    <div className="text-xs text-slate-500 mt-1">Tap to restore</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Instructions */}
-          <div className="card bg-purple-50 border-2 border-purple-300">
-            <h3 className="text-2xl font-bold mb-4 text-purple-800">📖 How to Use - Step-by-Step Guide</h3>
-            
-            {/* Main Instructions */}
-            <div className="bg-white p-4 rounded-lg mb-4">
-              <h4 className="font-bold text-lg mb-2">🎯 Basic Steps:</h4>
-              <ol className="list-decimal list-inside space-y-2 text-gray-700">
-                <li><strong>Click "Start Detection"</strong> to turn on your webcam</li>
-                <li><strong>Show ASL alphabet signs</strong> to your webcam (one at a time)</li>
-                <li><strong>Hold each sign steady</strong> for 2-3 seconds for accurate detection</li>
-                <li><strong>Watch the Confidence Meter</strong> - Green means good detection!</li>
-                <li><strong>Letters automatically appear</strong> in the Word Builder</li>
-              </ol>
-            </div>
-            
-            {/* Text-to-Speech Instructions */}
-            <div className="bg-blue-100 p-4 rounded-lg mb-4">
-              <h4 className="font-bold text-lg mb-2">🔊 Text-to-Speech Feature:</h4>
-              <ul className="list-disc list-inside space-y-2 text-gray-700">
-                <li><strong>Turn ON Voice:</strong> Click the "Voice ON/OFF" button (it turns green when ON)</li>
-                <li><strong>Build your sentence:</strong> Sign letters to create words</li>
-                <li><strong>Click "Speak Text":</strong> The computer will read your sentence out loud!</li>
-                <li><strong>Voice Speed:</strong> Set to slow and clear - perfect for students</li>
-                <li><strong>Turn OFF anytime:</strong> Click voice button again to disable</li>
-              </ul>
-            </div>
-            
-            {/* Word Builder Instructions */}
-            <div className="bg-green-100 p-4 rounded-lg mb-4">
-              <h4 className="font-bold text-lg mb-2">✍️ Word Builder Feature:</h4>
-              <ul className="list-disc list-inside space-y-2 text-gray-700">
-                <li><strong>Auto-Build:</strong> Each detected letter is automatically added to your sentence</li>
-                <li><strong>Add Space:</strong> Click "Add Space" to separate words, or let auto-spacing help while signing</li>
-                <li><strong>Fix Mistakes:</strong> Click "Backspace" to delete one letter or "Delete Word" to remove the last word</li>
-                <li><strong>History:</strong> Restore a previous sentence with one click from Sentence History</li>
-                <li><strong>Smart Suggestions:</strong> Use the blue suggestion chips to complete words faster</li>
-                <li><strong>Real-Time:</strong> See your sentence grow as you sign each letter!</li>
-              </ul>
-            </div>
-            
-            {/* Confidence Meter Instructions */}
-            <div className="bg-yellow-100 p-4 rounded-lg">
-              <h4 className="font-bold text-lg mb-2">📊 Confidence Meter Feature:</h4>
-              <ul className="list-disc list-inside space-y-2 text-gray-700">
-                <li><strong>What is it?</strong> A score (0-100%) showing how accurate the prediction is</li>
-                <li><strong>Green (80-100%):</strong> High confidence = Very accurate! ✓</li>
-                <li><strong>Yellow (50-79%):</strong> Medium confidence = Fairly accurate ⚠</li>
-                <li><strong>Red (0-49%):</strong> Low confidence = May not be accurate ✗</li>
-                <li><strong>Tip:</strong> Hold your hand steady and make clear signs for higher confidence!</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      </div>
+      <section className="rounded-[2rem] border border-slate-800 bg-slate-950/85 p-5 text-sm text-slate-300 shadow-xl">
+        <h3 className="text-lg font-bold text-white">Detection notes</h3>
+        <ul className="mt-3 grid gap-2 md:grid-cols-2">
+          <li>The current prediction adapter still uses the existing `/predict` contract, isolated behind a hook for later TF.js replacement.</li>
+          <li>Gemini API usage is optional. If the key is missing or a request fails, local fallback suggestions keep the UI stable.</li>
+          <li>Secondary-hand gestures now map to `SPACE`, `CLEAR`, and `SPEAK` with smoothing to reduce accidental triggers.</li>
+          <li>Speech, speech recognition, and camera features depend on browser support and user permission.</li>
+          <li>Practice reference cards are generated SVG placeholders and can be swapped for curated sign stills without changing UI code.</li>
+        </ul>
+      </section>
     </div>
   );
 }
