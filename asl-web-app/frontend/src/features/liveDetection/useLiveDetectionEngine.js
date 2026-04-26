@@ -98,6 +98,7 @@ export function useLiveDetectionEngine({
   const [lastLandmarks, setLastLandmarks] = useState([]);
   const [connectionStatus, setConnectionStatus] = useState('unknown');
   const [error, setError] = useState('');
+  const [lastControlAction, setLastControlAction] = useState('');
   const [visionQuality, setVisionQuality] = useState({
     handCount: 0,
     brightness: 0,
@@ -117,6 +118,7 @@ export function useLiveDetectionEngine({
   const requestInFlightRef = useRef(false);
   const processingFrameRef = useRef(false);
   const controlGestureRef = useRef({ action: '', hits: 0, lastAcceptedAt: 0 });
+  const controlActionTimeoutRef = useRef(null);
   const sessionIdRef = useRef(`alphahand-${Math.random().toString(36).slice(2, 10)}`);
   const handRoleRef = useRef({
     signLabel: '',
@@ -163,6 +165,11 @@ export function useLiveDetectionEngine({
       animationFrameRef.current = null;
     }
 
+    if (controlActionTimeoutRef.current) {
+      window.clearTimeout(controlActionTimeoutRef.current);
+      controlActionTimeoutRef.current = null;
+    }
+
     if (handsRef.current) {
       const currentHands = handsRef.current;
       handsRef.current = null;
@@ -182,6 +189,7 @@ export function useLiveDetectionEngine({
 
     drawOverlay(overlayRef.current, [], false);
     resetPredictionState();
+    setLastControlAction('');
     setVisionQuality({
       handCount: 0,
       brightness: 0,
@@ -368,6 +376,13 @@ export function useLiveDetectionEngine({
       now - controlGestureRef.current.lastAcceptedAt > 1600
     ) {
       controlGestureRef.current.lastAcceptedAt = now;
+      setLastControlAction(action);
+      if (controlActionTimeoutRef.current) {
+        window.clearTimeout(controlActionTimeoutRef.current);
+      }
+      controlActionTimeoutRef.current = window.setTimeout(() => {
+        setLastControlAction('');
+      }, 1400);
       if (typeof onControlGesture === 'function') {
         onControlGesture(action);
       }
@@ -589,7 +604,8 @@ export function useLiveDetectionEngine({
     connectionStatus,
     error,
     visionQuality,
-    sessionId: sessionIdRef.current
+    sessionId: sessionIdRef.current,
+    lastControlAction
   };
 }
 

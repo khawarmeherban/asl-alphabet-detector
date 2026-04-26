@@ -23,6 +23,12 @@ function HomePage() {
       link: '/detection'
     },
     {
+      icon: Brain,
+      title: 'Learning Mode',
+      description: 'Guided alphabet lessons, reference cards, and recall drills for practice.',
+      link: '/learning'
+    },
+    {
       icon: MessageSquare,
       title: 'Reverse Mode',
       description: 'Convert typed or dictated text into sign-card playback for hearing users.',
@@ -77,7 +83,7 @@ function HomePage() {
             <h2 className="mt-2 text-4xl font-black text-white">Built for real conversations</h2>
           </div>
         </div>
-        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-5">
           {features.map((feature) => (
             <Link key={feature.title} to={feature.link}>
               <article className="h-full rounded-[1.75rem] border border-slate-800 bg-slate-950/85 p-6 shadow-xl transition hover:-translate-y-1 hover:border-[#00ff88]/40">

@@ -1,15 +1,35 @@
-export const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:7860';
-export const GEMINI_MODEL = 'gemini-2.5-flash';
-export const GEMINI_API_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-export const GEMINI_SESSION_KEY = 'alphahand-gemini-api-key';
+function normalizeApiUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
+}
+
+function getDefaultApiUrl() {
+  if (typeof window === 'undefined') {
+    return 'http://localhost:7860';
+  }
+
+  const { protocol, hostname } = window.location;
+  const normalizedHost = String(hostname || '').trim().toLowerCase();
+  const isLocalHost =
+    normalizedHost === 'localhost' ||
+    normalizedHost === '127.0.0.1' ||
+    normalizedHost === '::1';
+
+  if (isLocalHost) {
+    return `${protocol}//${hostname}:7860`;
+  }
+
+  return `${protocol}//${hostname}:7860`;
+}
+
+export const API_URL = normalizeApiUrl(process.env.REACT_APP_API_URL) || getDefaultApiUrl();
 
 // FEATURE 1: hold time before a stable sign becomes a confirmed character.
-export const HOLD_CONFIRM_MS = 1500;
-export const LETTER_COOLDOWN_MS = 1200;
+export const HOLD_CONFIRM_MS = 900;
+export const LETTER_COOLDOWN_MS = 900;
 export const TARGET_FPS = 20;
 export const FRAME_INTERVAL_MS = Math.round(1000 / TARGET_FPS);
 export const PREDICTION_THROTTLE_MS = 220;
-export const MIN_CLIENT_CONFIDENCE = 0.65;
+export const MIN_CLIENT_CONFIDENCE = 0.55;
 export const TOAST_TIMEOUT_MS = 4200;
 export const DEFAULT_REVERSE_SPEED = 1.2;
 export const MIN_REVERSE_SPEED = 0.5;

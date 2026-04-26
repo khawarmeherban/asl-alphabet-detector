@@ -26,6 +26,14 @@ ENV/
 env/
 \.venv/
 
+# Local environment files / secrets
+.env
+.env.*
+!.env.example
+asl-web-app/backend/.env
+asl-web-app/frontend/.env
+asl-web-app/frontend/.env.local
+
 # IDEs
 .vscode/
 .idea/
@@ -40,6 +48,7 @@ env/
 *.task
 data/asl_dataset.csv
 data/asl_model.pkl
+asl_dataset/
 
 # Dataset Images (too large for GitHub)
 data/asl_dataset/

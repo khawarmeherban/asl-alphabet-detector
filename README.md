@@ -1,45 +1,107 @@
-# AlphaHand — Production-ready ASL Workspace
+# AlphaHand — ASL Alphabet Detector
 
-AlphaHand is a real-time ASL (American Sign Language) alphabet detector and communication workspace. This repository contains:
+AlphaHand is a premium real-time ASL alphabet communication platform. It combines webcam-based hand tracking, a Flask ML inference backend, word building, speech output, learning tools, analytics, and a gesture-powered virtual piano into one exhibition-ready accessibility project.
 
-- A Flask backend that serves an ML classifier for hand landmark features and provides prediction, health, and gesture endpoints.
-- A React frontend (`asl-web-app/frontend`) that runs MediaPipe Hands in the browser, debounces predictions, and provides a demo workspace with practice, suggestions, TTS, and gesture-controlled media.
-- Python utilities for dataset processing and model training (kept for reference and local development).
-
-This README consolidates the key project details and the most important developer and deployment tasks.
+The product goal is simple: help Deaf, hard-of-hearing, and hearing users bridge communication gaps with a fast, visual, and approachable ASL alphabet workflow.
 
 ## Key Features
 
-- Real-time ASL alphabet detection with MediaPipe hand tracking and confidence overlays
-- Stable-letter confirmation (1–1.5s hold / temporal consensus) to avoid flicker
-- Live word builder with on-device fallback suggestions and optional Gemini autocomplete
-- Dual-hand interaction: secondary hand can trigger `SPACE`, `CLEAR`, and `SPEAK` actions
-- Practice mode with randomized challenges, scoring, and streaks
-- Reverse mode for text → sign playback (ASL card renderer)
-- Browser Text-to-Speech and optional speech recognition helpers
+- **Live ASL Detection** — webcam hand tracking with MediaPipe, backend alphabet prediction, confidence display, and temporal smoothing.
+- **Word Builder** — stable detected letters become words and sentences with backspace, commit, and suggestion controls.
+- **Speech Output** — browser Text-to-Speech can read committed words or full sentences aloud.
+- **AI Assistance** — Gemini-backed correction, word suggestions, and Roman Urdu translation with local/backend fallbacks.
+- **Learning Mode** — guided A–Z practice cards, completion tracking, and recall drills for students and demos.
+- **Gesture Virtual Piano** — touchless piano, synth, and drum modes powered by hand motion and the native Web Audio API.
+- **Communication Suite** — ASL-to-text, voice-to-text, text playback, copy, save, and history flows.
+- **Analytics & History** — conversation history, message counts, and letter-frequency insights.
+- **Deployment Ready** — Netlify frontend configuration and Hugging Face Spaces backend configuration.
 
-## Important Files
+## Current Functionality Status
 
-- `asl-web-app/backend/app.py` — Flask backend and WebSocket handlers (prediction endpoints)
-- `asl-web-app/backend/asl_feature_utils.py` — feature engineering and model helpers
-- `asl-web-app/frontend/src/features/liveDetection/useLiveDetectionEngine.js` — MediaPipe integration and prediction adapter
-- `inference_classifier.py` — training and local inference script (reference)
+| Area | Status | Notes |
+| --- | --- | --- |
+| Frontend build | Working | Verified with `npm run build`. |
+| Backend health/API | Working | `/health`, `/predict-words`, `/history`, and `/statistics` respond locally. |
+| ASL prediction | Demo fallback active | `/predict` works with a geometry-based fallback if no model exists; add `asl_model.pkl` for full A–Z ML accuracy. |
+| Gemini features | Optional | Requires `GEMINI_API_KEY` in `asl-web-app/backend/.env`; local fallbacks keep the UI stable. |
+| Virtual Piano | Working | Uses browser Web Audio API, no external audio package required. |
 
-## Local Development
+## Tech Stack
 
-1. Backend (Python)
+### Frontend
+
+- React 18
+- React Router
+- Tailwind CSS
+- MediaPipe Hands
+- Lucide React
+- Recharts
+- Firebase web SDK
+- Browser APIs: `getUserMedia`, `speechSynthesis`, `SpeechRecognition`, Web Audio
+
+### Backend
+
+- Flask
+- Flask-CORS
+- Flask-SocketIO
+- NumPy
+- Scikit-learn
+- MediaPipe/OpenCV utilities
+- Google Gemini API
+- Gunicorn/Eventlet for deployment
+
+### ML Pipeline
+
+1. The browser captures webcam frames.
+2. MediaPipe extracts 21 hand landmarks.
+3. Landmarks are normalized client-side.
+4. Flask prepares the feature vector expected by the trained model.
+5. The classifier returns top predictions and confidence values.
+6. Temporal consensus filters flicker before letters enter the word builder.
+
+## Project Structure
+
+```text
+asl-alphabet-detector/
+├── README.md
+├── asl_feature_utils.py
+├── data_collector.py
+├── inference_classifier.py
+├── process_dataset.py
+├── docs/
+├── asl-web-app/
+│   ├── backend/
+│   │   ├── app.py
+│   │   ├── requirements.txt
+│   │   ├── Dockerfile
+│   │   └── Procfile
+│   └── frontend/
+│       ├── package.json
+│       └── src/
+│           ├── components/
+│           ├── features/
+│           └── pages/
+```
+
+## Setup
+
+### 1. Backend
 
 ```bash
 cd asl-web-app/backend
-python -m venv .venv   # optional: create virtualenv
+python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 python app.py
 ```
 
-The backend listens on port `7860` by default. Use `/health` to verify model load and status.
+Default backend URL:
 
-2. Frontend (React)
+```text
+http://localhost:7860
+```
+
+### 2. Frontend
 
 ```bash
 cd asl-web-app/frontend
@@ -47,39 +109,122 @@ npm install
 npm start
 ```
 
-Set `REACT_APP_API_URL` to point to the backend (e.g., `http://localhost:7860`) in your environment or in a local `.env`.
+Default frontend URL:
 
-## Deployment Notes
-
-- Frontend: Netlify is used in production. Build with `npm run build` and configure Netlify to serve files from `asl-web-app/frontend/build`.
-- Backend: Hugging Face Spaces (Docker) or a standard host. Ensure the trained model `asl_model.pkl` is present in the backend working directory or configure `ASL_MODEL_PATH`.
-- Important: If the backend cannot find the model, `/predict` and `/predict/batch` now return `503` and `/health` reports `model_loaded: false`.
-
-## Cleanup & Repository Hygiene
-
-- The repo should not include local virtual environments or build artifacts. Consider adding these to `.gitignore`:
-
-```
-.venv/
-asl-web-app/frontend/build/
-__pycache__/
-.DS_Store
-node_modules/
-.env
-.env.local
-.sixth/
+```text
+http://localhost:3000
 ```
 
-I will remove obvious generated artifacts (build output, bytecode caches) and consolidate docs into this README unless you prefer separate docs.
+### 3. Environment Variables
 
-## Troubleshooting
+Frontend:
 
-- If `/predict` returns 503, the model file is missing or failed to load — check backend logs and ensure `asl_model.pkl` exists.
-- If MediaPipe causes main-thread jank, ensure the frontend is using the non-blocking send pattern and the model server is healthy.
+```env
+REACT_APP_API_URL=http://localhost:7860
+```
 
-## Next Steps I Took
+Backend:
 
-- Hardened backend inference by offloading `model.predict_proba` to a thread pool and added a configurable timeout.
-- Made MediaPipe frame handling non-blocking in the frontend hook to reduce UI jank.
+```env
+PORT=7860
+CORS_ORIGINS=*
+ASL_MODEL_PATH=./asl_model.pkl
+GEMINI_API_KEY=your_optional_key
+GEMINI_MODEL=gemini-2.5-flash
+ENABLE_HEURISTIC_FALLBACK=true
+```
 
-For deployment pushes or PRs, tell me whether to push directly to `main` or create a feature branch and PR.
+Do not commit real `.env` files or API keys.
+
+## Model Setup
+
+The production detector is designed for a trained model file named `asl_model.pkl`. If the model is missing, the backend can still run Live Detection with `ENABLE_HEURISTIC_FALLBACK=true`, which uses a lightweight geometry-based demo predictor for common ASL alphabet shapes. This is useful for exhibitions and UI testing, but a trained model is required for full A–Z accuracy.
+
+If you already have a trained model:
+
+```powershell
+cd asl-web-app/backend
+.\copy_model.ps1
+```
+
+Expected model locations:
+
+- `data/asl_model.pkl`
+- `asl-web-app/backend/asl_model.pkl`
+- custom path via `ASL_MODEL_PATH`
+
+If you need to train the model:
+
+```bash
+python process_dataset.py
+python inference_classifier.py
+```
+
+The generated file should be copied or referenced so the backend can load it before `/predict` will return alphabet predictions.
+
+## Usage Guide
+
+- Open **Live Detection** to start ASL alphabet recognition.
+- Allow camera access and keep your hand centered in good lighting.
+- Hold a sign steady until it becomes a stable prediction.
+- Use **Commit Word**, **Backspace**, and suggestions to build sentences.
+- Use **Speak Sentence** for Text-to-Speech.
+- Open **Learning Mode** for guided A–Z practice.
+- Open **Virtual Music** to play notes with fingertip motion.
+- Open **Analytics** and **History** to review usage.
+
+## API Overview
+
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/` | GET | Backend status |
+| `/health` | GET | Model, feature, cache, and setup diagnostics |
+| `/predict` | POST | Single ASL landmark prediction |
+| `/predict/batch` | POST | Batch landmark prediction |
+| `/predict-words` | POST | Local word/phrase suggestions |
+| `/gemini/correct` | POST | AI correction for noisy signed text |
+| `/gemini/suggestions` | POST | AI word suggestions |
+| `/gemini/translate-urdu` | POST | Roman Urdu translation |
+| `/history` | GET/POST/DELETE | Conversation history |
+| `/statistics` | GET | Usage statistics |
+
+## Deployment
+
+### Frontend: Netlify
+
+- Base directory: `asl-web-app/frontend`
+- Build command: `npm run build`
+- Publish directory: `asl-web-app/frontend/build`
+- Set `REACT_APP_API_URL` to the live Hugging Face backend URL.
+
+### Backend: Hugging Face Spaces
+
+- Use `asl-web-app/backend` files.
+- Ensure `asl_model.pkl` is present or `ASL_MODEL_PATH` points to it.
+- Set `GEMINI_API_KEY` only in secure Space secrets if AI assistance is needed.
+- The backend listens on port `7860`.
+
+## Accessibility Impact
+
+AlphaHand is designed for inclusive communication in classrooms, exhibitions, healthcare desks, public service counters, and family conversations. It turns a technical ML demo into a usable assistive interface by combining detection, confirmation, suggestions, speech, translation, and learning in one flow.
+
+## Validation
+
+Run these checks before presenting or deploying:
+
+```bash
+cd asl-web-app/frontend
+npm run build
+```
+
+```bash
+cd asl-web-app/backend
+python app.py
+```
+
+Then verify:
+
+- `GET http://localhost:7860/health`
+- `POST http://localhost:7860/predict-words`
+- Live Detection camera permission and backend connection
+- Model loaded state in `/health`

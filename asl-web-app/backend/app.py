@@ -20,21 +20,27 @@ import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
+from dotenv import load_dotenv
+import google.generativeai as genai
 
 from asl_feature_utils import prepare_model_features, top_k_predictions
 import concurrent.futures
 
+load_dotenv(os.path.join(BACKEND_DIR, '.env'))
 PORT = int(os.getenv('PORT', '7860'))
 CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
 SOCKETIO_ASYNC_MODE = os.getenv('SOCKETIO_ASYNC_MODE', 'threading')
-MIN_PREDICTION_CONFIDENCE = float(os.getenv('MIN_PREDICTION_CONFIDENCE', '0.72'))
-MIN_PREDICTION_MARGIN = float(os.getenv('MIN_PREDICTION_MARGIN', '0.08'))
+MIN_PREDICTION_CONFIDENCE = float(os.getenv('MIN_PREDICTION_CONFIDENCE', '0.58'))
+MIN_PREDICTION_MARGIN = float(os.getenv('MIN_PREDICTION_MARGIN', '0.03'))
 TEMPORAL_WINDOW_SIZE = int(os.getenv('TEMPORAL_WINDOW_SIZE', '6'))
-TEMPORAL_MIN_HITS = int(os.getenv('TEMPORAL_MIN_HITS', '4'))
-TEMPORAL_MIN_RATIO = float(os.getenv('TEMPORAL_MIN_RATIO', '0.65'))
+TEMPORAL_MIN_HITS = int(os.getenv('TEMPORAL_MIN_HITS', '3'))
+TEMPORAL_MIN_RATIO = float(os.getenv('TEMPORAL_MIN_RATIO', '0.55'))
 SESSION_STATE_LIMIT = int(os.getenv('SESSION_STATE_LIMIT', '256'))
 PREDICT_WORKERS = int(os.getenv('PREDICT_WORKERS', '2'))
 PREDICT_TIMEOUT = float(os.getenv('PREDICT_TIMEOUT', '3.0'))
+ENABLE_HEURISTIC_FALLBACK = os.getenv('ENABLE_HEURISTIC_FALLBACK', 'true').strip().lower() not in {'0', 'false', 'no'}
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash').strip()
 
 app = Flask(__name__)
 CORS(app, origins=CORS_ORIGINS)
@@ -43,12 +49,27 @@ socketio = SocketIO(app, cors_allowed_origins=CORS_ORIGINS, async_mode=SOCKETIO_
 # Executor for offloading model inference so request threads are not blocked
 prediction_executor = concurrent.futures.ThreadPoolExecutor(max_workers=PREDICT_WORKERS)
 
+# Gemini server-side setup (no frontend key exposure)
+gemini_client = None
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        gemini_client = genai.GenerativeModel(GEMINI_MODEL)
+        print(f"[OK] Gemini configured with model: {GEMINI_MODEL}")
+    except Exception as gemini_setup_error:
+        gemini_client = None
+        print(f"[WARNING] Gemini setup failed: {gemini_setup_error}")
+else:
+    print("[INFO] GEMINI_API_KEY not set. Gemini features will use fallback behavior.")
+
 @app.route("/", methods=["GET"])
 def root():
     return jsonify({
         "status": "ok",
         "message": "ASL backend is running",
-        "model_loaded": model is not None
+        "model_loaded": model is not None,
+        "predictor_available": model is not None or ENABLE_HEURISTIC_FALLBACK,
+        "fallback_enabled": model is None and ENABLE_HEURISTIC_FALLBACK
     })
 
 # Load ML model with local + deployment-friendly path resolution
@@ -63,6 +84,15 @@ MODEL_PATH = next(
     (path for path in MODEL_CANDIDATES if os.path.exists(path)),
     MODEL_CANDIDATES[0] if MODEL_CANDIDATES else 'asl_model.pkl'
 )
+MODEL_LOAD_ERROR = None
+
+
+def model_setup_hint():
+    return (
+        'ASL model is missing or failed to load. Train it with '
+        '`python inference_classifier.py`, copy `data/asl_model.pkl` to '
+        '`asl-web-app/backend/asl_model.pkl`, or set ASL_MODEL_PATH to the trained model file.'
+    )
 
 print(f"[INFO] Model search paths: {MODEL_CANDIDATES}")
 model = None
@@ -70,13 +100,15 @@ try:
     if os.path.exists(MODEL_PATH):
         with open(MODEL_PATH, 'rb') as f:
             model = pickle.load(f)
-        print(f"[OK] ✓ Model loaded successfully from: {MODEL_PATH}")
+        print(f"[OK] Model loaded successfully from: {MODEL_PATH}")
     else:
-        print(f"[WARNING] Model not found. Checked: {MODEL_CANDIDATES}")
-        print("[INFO] Please train the model first or copy asl_model.pkl into the backend directory")
+        MODEL_LOAD_ERROR = f"Model not found. Checked: {MODEL_CANDIDATES}"
+        print(f"[WARNING] {MODEL_LOAD_ERROR}")
+        print(f"[INFO] {model_setup_hint()}")
 except Exception as e:
-    print(f"[ERROR] Failed to load model: {e}")
-    print("[INFO] Server will run but predictions will not work until model is fixed")
+    MODEL_LOAD_ERROR = f"Failed to load model: {e}"
+    print(f"[ERROR] {MODEL_LOAD_ERROR}")
+    print(f"[INFO] {model_setup_hint()}")
     model = None
 
 # TTS Engine with thread lock - disabled due to Python 3.13 compatibility
@@ -89,7 +121,9 @@ conversation_history = []
 MAX_HISTORY = 500
 CACHE_LIMIT = 256
 MODEL_FEATURES = getattr(model, 'n_features_in_', None)
-MODEL_FEATURE_MODE = getattr(model, 'asl_feature_mode', 'raw_xy_v1') if model is not None else 'unavailable'
+MODEL_FEATURE_MODE = getattr(model, 'asl_feature_mode', 'raw_xy_v1') if model is not None else (
+    'heuristic_demo_v1' if ENABLE_HEURISTIC_FALLBACK else 'unavailable'
+)
 history_lock = threading.Lock()
 cache_lock = threading.Lock()
 session_lock = threading.Lock()
@@ -277,9 +311,150 @@ def _apply_temporal_consensus(session_id, result):
     return payload
 
 
+def _distance(point_a, point_b):
+    return float(np.linalg.norm(point_a - point_b))
+
+
+def _finger_states(coords):
+    fingers = {
+        'index': (8, 6, 5),
+        'middle': (12, 10, 9),
+        'ring': (16, 14, 13),
+        'pinky': (20, 18, 17),
+    }
+    states = {}
+    for name, (tip_index, pip_index, mcp_index) in fingers.items():
+        tip = coords[tip_index]
+        pip = coords[pip_index]
+        mcp = coords[mcp_index]
+        states[name] = {
+            'extended': tip[1] < pip[1] - 0.035 and tip[1] < mcp[1] - 0.07,
+            'curled': tip[1] > pip[1] - 0.015,
+            'tip': tip,
+        }
+
+    thumb_tip = coords[4]
+    thumb_ip = coords[3]
+    thumb_mcp = coords[2]
+    states['thumb'] = {
+        'extended': abs(thumb_tip[0] - thumb_mcp[0]) > 0.18 and _distance(thumb_tip, coords[9]) > 0.24,
+        'curled': _distance(thumb_tip, coords[9]) < 0.28 or abs(thumb_tip[0] - thumb_ip[0]) < 0.08,
+        'tip': thumb_tip,
+    }
+    return states
+
+
+def _ranked_heuristic_predictions(coords):
+    states = _finger_states(coords)
+    extended = {name for name, state in states.items() if state['extended']}
+    thumb_index_distance = _distance(coords[4], coords[8])
+    thumb_middle_distance = _distance(coords[4], coords[12])
+    fingertip_distances = [_distance(coords[4], coords[index]) for index in (8, 12, 16, 20)]
+    bbox_width = float(coords[:, 0].max() - coords[:, 0].min())
+    bbox_height = float(coords[:, 1].max() - coords[:, 1].min())
+    aspect_ratio = bbox_width / bbox_height if bbox_height > 1e-6 else 0.0
+
+    candidates = []
+    add = candidates.append
+    four_fingers = {'index', 'middle', 'ring', 'pinky'}.issubset(extended)
+
+    if four_fingers and 'thumb' not in extended:
+        add(('B', 0.82, 'four fingers up, thumb folded'))
+    if {'index', 'middle', 'ring'}.issubset(extended) and 'pinky' not in extended:
+        add(('W', 0.84, 'three raised fingers'))
+    if {'index', 'middle'}.issubset(extended) and not {'ring', 'pinky'} & extended:
+        add(('V', 0.82, 'two raised fingers'))
+    if extended == {'index'} and thumb_index_distance > 0.22:
+        add(('D', 0.78, 'single raised index'))
+    if {'thumb', 'index'}.issubset(extended) and not {'middle', 'ring', 'pinky'} & extended:
+        add(('L', 0.84, 'thumb and index angle'))
+    if {'thumb', 'pinky'}.issubset(extended) and not {'index', 'middle', 'ring'} & extended:
+        add(('Y', 0.84, 'thumb and pinky extended'))
+    if extended == {'pinky'}:
+        add(('I', 0.8, 'pinky extended'))
+    if thumb_index_distance < 0.12 and {'middle', 'ring', 'pinky'}.issubset(extended):
+        add(('F', 0.83, 'thumb-index circle with three fingers up'))
+    if max(fingertip_distances) < 0.28:
+        add(('O', 0.78, 'rounded closed fingertips'))
+    if not extended and states['thumb']['extended']:
+        add(('A', 0.76, 'closed fist with visible thumb'))
+    if not extended and not states['thumb']['extended']:
+        add(('S', 0.72, 'closed fist'))
+    if not four_fingers and 0.65 <= aspect_ratio <= 1.35 and bbox_width > 0.32 and bbox_height > 0.32:
+        add(('C', 0.7, 'curved open hand silhouette'))
+    if extended == {'index', 'middle', 'pinky'}:
+        add(('K', 0.68, 'split raised fingers'))
+    if thumb_middle_distance < 0.18 and extended == {'index'}:
+        add(('T', 0.64, 'thumb tucked near fingers'))
+
+    if not candidates:
+        if four_fingers:
+            add(('B', 0.62, 'open hand fallback'))
+        elif 'index' in extended:
+            add(('D', 0.6, 'pointing fallback'))
+        else:
+            add(('A', 0.58, 'closed-hand fallback'))
+
+    ranked = []
+    seen = set()
+    for label, confidence, reason in sorted(candidates, key=lambda item: item[1], reverse=True):
+        if label in seen:
+            continue
+        seen.add(label)
+        ranked.append({'label': label, 'confidence': float(confidence), 'reason': reason})
+
+    for label in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        if len(ranked) >= 3:
+            break
+        if label not in seen:
+            ranked.append({'label': label, 'confidence': 0.25, 'reason': 'low-confidence fallback'})
+            seen.add(label)
+
+    return ranked[:3]
+
+
+def predict_landmarks_heuristic(landmarks, session_id=None):
+    """Fallback ASL demo predictor used only when no trained model is available."""
+    arr = np.asarray(landmarks, dtype=np.float32).flatten()
+    if arr.size == 0:
+        raise ValueError('No landmarks provided')
+
+    if arr.size >= 63 and arr.size % 3 == 0:
+        coords = arr.reshape(-1, 3)[:21, :2]
+    elif arr.size >= 42:
+        coords = arr[:42].reshape(21, 2)
+    else:
+        raise ValueError(f'Expected at least 42 landmark values, received {arr.size}')
+
+    ranked = _ranked_heuristic_predictions(coords)
+    best = ranked[0]
+    second_confidence = ranked[1]['confidence'] if len(ranked) > 1 else 0.0
+    confidence = float(best['confidence'])
+    accepted = confidence >= 0.55
+    raw_result = {
+        'prediction': best['label'] if accepted else '',
+        'raw_prediction': best['label'],
+        'confidence': confidence,
+        'confidence_margin': float(confidence - second_confidence),
+        'accepted': accepted,
+        'top_predictions': [
+            {'label': item['label'], 'confidence': item['confidence']}
+            for item in ranked
+        ],
+        'timestamp': datetime.now().isoformat(),
+        'cached': False,
+        'fallback': True,
+        'fallback_mode': 'heuristic_demo_v1',
+        'fallback_reason': best.get('reason', 'heuristic match'),
+    }
+    return _apply_temporal_consensus(session_id, raw_result)
+
+
 def predict_landmarks_cached(landmarks, session_id=None):
     """Run a fast cached prediction for one landmark vector."""
     if model is None:
+        if ENABLE_HEURISTIC_FALLBACK:
+            return predict_landmarks_heuristic(landmarks, session_id)
         raise RuntimeError('Model not loaded')
 
     cache_key = _cache_key(landmarks)
@@ -326,9 +501,20 @@ def predict_landmarks_cached(landmarks, session_id=None):
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint."""
+    predictor_available = model is not None or ENABLE_HEURISTIC_FALLBACK
     return jsonify({
-        'status': 'healthy',
+        'status': 'healthy' if model is not None else ('demo' if ENABLE_HEURISTIC_FALLBACK else 'degraded'),
         'model_loaded': model is not None,
+        'predictor_available': predictor_available,
+        'fallback_enabled': model is None and ENABLE_HEURISTIC_FALLBACK,
+        'fallback_mode': 'heuristic_demo_v1' if model is None and ENABLE_HEURISTIC_FALLBACK else None,
+        'model_path': MODEL_PATH,
+        'model_candidates': MODEL_CANDIDATES,
+        'model_error': MODEL_LOAD_ERROR,
+        'setup_hint': None if model is not None else (
+            'Demo fallback is active. Add a trained asl_model.pkl for full A-Z ML accuracy.'
+            if ENABLE_HEURISTIC_FALLBACK else model_setup_hint()
+        ),
         'feature_count': MODEL_FEATURES,
         'feature_mode': MODEL_FEATURE_MODE,
         'min_confidence': MIN_PREDICTION_CONFIDENCE,
@@ -346,8 +532,14 @@ def predict():
     """Predict one ASL sign from landmarks."""
     try:
         data = request.get_json(silent=True) or {}
-        if model is None:
-            return jsonify({'error': 'Model not loaded'}), 503
+        if model is None and not ENABLE_HEURISTIC_FALLBACK:
+            return jsonify({
+                'error': 'Model not loaded',
+                'model_path': MODEL_PATH,
+                'model_candidates': MODEL_CANDIDATES,
+                'model_error': MODEL_LOAD_ERROR,
+                'setup_hint': model_setup_hint()
+            }), 503
         landmarks = data.get('landmarks')
         if not isinstance(landmarks, list) or not landmarks:
             return jsonify({'error': 'Invalid or missing landmarks'}), 400
@@ -362,8 +554,14 @@ def predict():
 def predict_batch():
     """Predict multiple landmark sets in one request."""
     try:
-        if model is None:
-            return jsonify({'error': 'Model not loaded'}), 503
+        if model is None and not ENABLE_HEURISTIC_FALLBACK:
+            return jsonify({
+                'error': 'Model not loaded',
+                'model_path': MODEL_PATH,
+                'model_candidates': MODEL_CANDIDATES,
+                'model_error': MODEL_LOAD_ERROR,
+                'setup_hint': model_setup_hint()
+            }), 503
         data = request.get_json(silent=True) or {}
         samples = data.get('samples') or data.get('items') or []
         if not isinstance(samples, list) or not samples:
@@ -385,6 +583,74 @@ def predict_batch():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+def _gemini_json_prompt(prompt, fallback_error='Gemini request failed'):
+    if gemini_client is None:
+        raise RuntimeError('Gemini is not configured on backend')
+
+    response = gemini_client.generate_content(prompt)
+    text = getattr(response, 'text', '') or ''
+    cleaned = text.strip().replace('```json', '').replace('```', '').strip()
+    if not cleaned:
+        raise RuntimeError(fallback_error)
+    return cleaned
+
+@app.route('/gemini/correct', methods=['POST'])
+def gemini_correct():
+    try:
+        data = request.get_json(silent=True) or {}
+        text = str(data.get('text', '')).strip().lower()
+        if not text:
+            return jsonify({'corrected': ''})
+
+        prompt = (
+            "Fix this possibly noisy ASL letter sequence into the most likely English word. "
+            "Return JSON only with one key named corrected. "
+            f"Input: '{text}'"
+        )
+        raw = _gemini_json_prompt(prompt, 'Gemini correction failed')
+        import json
+        parsed = json.loads(raw)
+        corrected = str(parsed.get('corrected', text)).strip().lower()
+        return jsonify({'corrected': corrected or text})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/gemini/suggestions', methods=['POST'])
+def gemini_suggestions():
+    try:
+        data = request.get_json(silent=True) or {}
+        text = str(data.get('text', '')).strip()
+        if not text:
+            return jsonify({'suggestions': []})
+
+        prompt = (
+            "Return JSON only as an array of 3 likely English words based on this ASL-built text: "
+            f"'{text}'"
+        )
+        raw = _gemini_json_prompt(prompt, 'Gemini suggestions failed')
+        import json
+        parsed = json.loads(raw)
+        suggestions = parsed if isinstance(parsed, list) else []
+        suggestions = [str(item).strip() for item in suggestions if str(item).strip()][:3]
+        return jsonify({'suggestions': suggestions})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/gemini/translate-urdu', methods=['POST'])
+def gemini_translate_urdu():
+    try:
+        data = request.get_json(silent=True) or {}
+        text = str(data.get('text', '')).strip()
+        if not text:
+            return jsonify({'translation': ''})
+
+        prompt = f"Translate this English sentence to Roman Urdu only: '{text}'"
+        raw = _gemini_json_prompt(prompt, 'Gemini translation failed')
+        translation = raw.replace('"', '').replace("'", '').strip()
+        return jsonify({'translation': translation})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/predict-words', methods=['POST'])
 def predict_words_endpoint():
     """Get word predictions based on current text"""
@@ -392,7 +658,7 @@ def predict_words_endpoint():
         data = request.json
         current_text = data.get('text', '')
         suggestions = predict_words(current_text)
-        
+
         return jsonify({
             'predictions': suggestions['words'],
             'phrases': suggestions['phrases'],
@@ -400,7 +666,7 @@ def predict_words_endpoint():
             'normalized_text': suggestions['text'],
             'timestamp': datetime.now().isoformat()
         })
-    
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

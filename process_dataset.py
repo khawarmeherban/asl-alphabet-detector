@@ -17,21 +17,12 @@ from tqdm import tqdm
 
 from asl_feature_utils import normalize_landmarks
 
-# Initialize MediaPipe Hands using the tasks API
+VALID_LABELS = set('abcdefghijklmnopqrstuvwxyz')
+
 BaseOptions = mp.tasks.BaseOptions
 HandLandmarker = mp.tasks.vision.HandLandmarker
 HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 VisionRunningMode = mp.tasks.vision.RunningMode
-
-# Create hand landmarker
-options = HandLandmarkerOptions(
-    base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
-    running_mode=VisionRunningMode.IMAGE,
-    num_hands=1,
-    min_hand_detection_confidence=0.5,
-    min_hand_presence_confidence=0.5,
-    min_tracking_confidence=0.5
-)
 
 
 def process_dataset(dataset_root='data/asl_dataset'):
@@ -52,14 +43,28 @@ def process_dataset(dataset_root='data/asl_dataset'):
         print(f"\n[X] Error: Dataset folder not found at {dataset_root}")
         return None
     
-    # Create hand landmarker
+    task_path = 'hand_landmarker.task'
+    if not os.path.exists(task_path):
+        print(f"\n[X] Error: MediaPipe model file not found at {task_path}")
+        print("Download it from MediaPipe and rerun this script.")
+        return None
+
+    options = HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=task_path),
+        running_mode=VisionRunningMode.IMAGE,
+        num_hands=1,
+        min_hand_detection_confidence=0.45,
+        min_hand_presence_confidence=0.45,
+        min_tracking_confidence=0.45,
+    )
+
     with HandLandmarker.create_from_options(options) as landmarker:
         # Collect all image paths and labels
         image_data = []
         
-        # Get all class folders (0-9, a-z)
+        # Get alphabet class folders only. Ignore nested dataset folders and digits.
         class_folders = [d for d in os.listdir(dataset_root) 
-                         if os.path.isdir(os.path.join(dataset_root, d))]
+                         if os.path.isdir(os.path.join(dataset_root, d)) and d.lower() in VALID_LABELS]
         class_folders.sort()
         
         print(f"\nFound {len(class_folders)} classes: {class_folders}\n")
@@ -89,10 +94,7 @@ def process_dataset(dataset_root='data/asl_dataset'):
                 # Convert BGR to RGB
                 rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 
-                # Create MediaPipe Image object
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
-                
-                # Process with MediaPipe
                 detection_result = landmarker.detect(mp_image)
                 
                 if detection_result.hand_landmarks:
@@ -105,12 +107,10 @@ def process_dataset(dataset_root='data/asl_dataset'):
                     
                     # Create feature dictionary
                     feature_dict = {'label': class_name.lower()}
-                    for i, val in enumerate(normalized_features):
-                        if i < 21:
-                            feature_dict[f'x{i}'] = val
-                        else:
-                            feature_dict[f'y{i-21}'] = val
-                    
+                    coords = normalized_features.reshape(21, 2)
+                    for i, (x_coord, y_coord) in enumerate(coords):
+                        feature_dict[f'x{i}'] = float(x_coord)
+                        feature_dict[f'y{i}'] = float(y_coord)
                     image_data.append(feature_dict)
                     success_count += 1
                 else:
@@ -135,7 +135,8 @@ def process_dataset(dataset_root='data/asl_dataset'):
 
 def main():
     # Process the dataset
-    df = process_dataset('data/asl_dataset')
+    dataset_root = 'data/asl_dataset' if os.path.exists('data/asl_dataset') else 'asl_dataset'
+    df = process_dataset(dataset_root)
     
     if df is not None:
         # Save to CSV

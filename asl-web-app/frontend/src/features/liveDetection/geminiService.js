@@ -1,32 +1,18 @@
-import {
-  COMMON_WORDS,
-  GEMINI_API_ENDPOINT,
-  GEMINI_MAX_RETRIES,
-  GEMINI_RETRY_BASE_MS
-} from './constants';
-
-function getResponseText(payload) {
-  const parts = payload?.candidates?.[0]?.content?.parts || [];
-  return parts
-    .map((part) => part?.text || '')
-    .join('')
-    .trim();
-}
+import { API_URL, COMMON_WORDS, GEMINI_MAX_RETRIES, GEMINI_RETRY_BASE_MS } from './constants';
 
 function getApiErrorMessage(payload, fallbackMessage) {
   return payload?.error?.message || fallbackMessage;
 }
 
-async function postGeminiRequest({ apiKey, body, fallbackMessage }) {
+async function postGeminiRequest({ endpoint, body, fallbackMessage }) {
   let lastError = null;
 
   for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt += 1) {
     try {
-      const response = await fetch(GEMINI_API_ENDPOINT, {
+      const response = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify(body)
       });
@@ -50,6 +36,23 @@ async function postGeminiRequest({ apiKey, body, fallbackMessage }) {
   }
 
   throw lastError || new Error(fallbackMessage);
+}
+
+async function fetchBackendSuggestions(text) {
+  const response = await fetch(`${API_URL}/predict-words`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ text })
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(getApiErrorMessage(payload, 'Backend suggestions failed.'));
+  }
+
+  return Array.isArray(payload?.predictions) ? payload.predictions : [];
 }
 
 export function getFallbackWordSuggestions(letters) {
@@ -113,118 +116,66 @@ export function getFallbackCorrectedWord(letters) {
 }
 
 // FEATURE 2: correct noisy letter sequences before suggestion lookup.
-export async function correctNoisyWord(letters, apiKey) {
+export async function correctNoisyWord(letters) {
   const normalized = String(letters || '').trim().toLowerCase();
   if (!normalized) {
     return '';
   }
 
-  if (!apiKey) {
-    return getFallbackCorrectedWord(normalized);
-  }
-
   const payload = await postGeminiRequest({
-    apiKey,
+    endpoint: '/gemini/correct',
     fallbackMessage: 'Gemini could not correct the noisy word input.',
     body: {
-      contents: [
-        {
-          parts: [
-            {
-              text: `Fix this possibly noisy ASL letter sequence into the most likely English word. Return ONLY JSON with one key named corrected. Input: '${normalized}'`
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 40,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'object',
-          properties: {
-            corrected: { type: 'string' }
-          },
-          required: ['corrected']
-        }
-      }
+      text: normalized
     }
   });
 
-  const text = getResponseText(payload);
-  const parsed = JSON.parse(text);
-  return String(parsed?.corrected || normalized).trim().toLowerCase();
+  const corrected = String(payload?.corrected || '').trim().toLowerCase();
+  return corrected || getFallbackCorrectedWord(normalized);
 }
 
 // FEATURE 1: Gemini autocomplete for the current signed word.
-export async function fetchGeminiWordSuggestions(letters, apiKey) {
+export async function fetchGeminiWordSuggestions(letters) {
   const normalized = String(letters || '').trim();
-  if (!normalized || !apiKey) {
+  if (!normalized) {
     return [];
   }
 
-  const payload = await postGeminiRequest({
-    apiKey,
-    fallbackMessage: 'Gemini could not return word suggestions.',
-    body: {
-      contents: [
-        {
-          parts: [
-            {
-              text: `Return ONLY a JSON array of 3 likely English words based on: '${normalized}'`
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.2,
-        maxOutputTokens: 96,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'array',
-          items: { type: 'string' },
-          minItems: 3,
-          maxItems: 3
-        }
+  try {
+    const payload = await postGeminiRequest({
+      endpoint: '/gemini/suggestions',
+      fallbackMessage: 'Gemini could not return word suggestions.',
+      body: {
+        text: normalized
       }
-    }
-  });
+    });
 
-  const text = getResponseText(payload);
-  const parsed = JSON.parse(text);
-  return Array.isArray(parsed)
-    ? parsed.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
-    : [];
+    const suggestions = Array.isArray(payload?.suggestions) ? payload.suggestions : [];
+    return suggestions.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3);
+  } catch {
+    const backendSuggestions = await fetchBackendSuggestions(normalized).catch(() => []);
+    return backendSuggestions.length
+      ? backendSuggestions.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 3)
+      : getFallbackWordSuggestions(normalized);
+  }
 }
 
 // FEATURE 5: Gemini Roman Urdu translation.
-export async function translateSentenceToRomanUrdu(sentence, apiKey) {
+export async function translateSentenceToRomanUrdu(sentence) {
   const normalized = String(sentence || '').trim();
-  if (!normalized || !apiKey) {
+  if (!normalized) {
     return '';
   }
 
   const payload = await postGeminiRequest({
-    apiKey,
+    endpoint: '/gemini/translate-urdu',
     fallbackMessage: 'Gemini could not translate this sentence.',
     body: {
-      contents: [
-        {
-          parts: [
-            {
-              text: `Translate to Roman Urdu only: '${normalized}'`
-            }
-          ]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: 120
-      }
+      text: normalized
     }
   });
 
-  return getResponseText(payload)
+  return String(payload?.translation || '')
     .replace(/^["'`]+|["'`]+$/g, '')
     .trim();
 }

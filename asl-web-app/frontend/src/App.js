@@ -1,6 +1,15 @@
 import React, { lazy, Suspense } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Camera, Home, MessageSquare, BarChart3, History, Hand } from 'lucide-react';
+import { BrowserRouter as Router, Link, Route, Routes, useLocation } from 'react-router-dom';
+import {
+  Activity,
+  Brain,
+  Camera,
+  Hand,
+  History,
+  Home,
+  MessageSquare,
+  Music2
+} from 'lucide-react';
 import { ThemeProvider, ThemeToggle } from './context/ThemeContext';
 
 const HomePage = lazy(() => import('./pages/HomePage'));
@@ -9,26 +18,16 @@ const BidirectionalPage = lazy(() => import('./pages/BidirectionalPage'));
 const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const GestureControl = lazy(() => import('./pages/GestureControl'));
+const VirtualPianoPage = lazy(() => import('./pages/VirtualPianoPage'));
+const LearningMode = lazy(() => import('./pages/LearningMode'));
 
 function LoadingFallback() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(0,255,136,0.18),_transparent_28%),linear-gradient(145deg,#020617,#08130f_55%,#03120c)]">
-      <div className="space-y-6 text-center">
-        <div className="relative">
-          <div className="mx-auto h-24 w-24 animate-spin rounded-full border-8 border-[#00ff88] border-t-transparent" />
-          <div className="absolute inset-0 flex items-center justify-center text-4xl" role="img" aria-label="hand sign">
-            🤟
-          </div>
-        </div>
-        <div className="space-y-2">
-          <h2 className="text-2xl font-bold text-white">Loading AlphaHand...</h2>
-          <p className="text-[#b8ffda]">Preparing the live communication workspace</p>
-        </div>
-        <div className="mx-auto mt-8 max-w-md space-y-3">
-          <div className="h-4 animate-pulse rounded bg-white/10" />
-          <div className="mx-auto h-4 w-3/4 animate-pulse rounded bg-white/10" />
-          <div className="mx-auto h-4 w-1/2 animate-pulse rounded bg-white/10" />
-        </div>
+    <div className="flex min-h-[70vh] items-center justify-center">
+      <div className="rounded-[2rem] border border-white/10 bg-[#07131c]/92 px-8 py-10 text-center shadow-[0_24px_80px_rgba(2,8,12,0.42)]">
+        <div className="mx-auto h-14 w-14 animate-spin rounded-full border-4 border-[#1fe0b1] border-t-transparent" />
+        <h2 className="mt-5 text-2xl font-black text-white">Loading AlphaHand</h2>
+        <p className="mt-2 text-sm text-slate-400">Preparing the competition workspace</p>
       </div>
     </div>
   );
@@ -45,18 +44,23 @@ class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, errorInfo) {
-    console.error('Error caught by boundary:', error, errorInfo);
+    console.error('Application boundary error:', error, errorInfo);
   }
 
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen flex items-center justify-center bg-[linear-gradient(145deg,#1f1111,#120606)]">
-          <div className="card max-w-md text-center">
-            <h1 className="mb-4 text-3xl font-bold text-red-600">Something went wrong</h1>
-            <p className="mb-6 text-gray-700">{this.state.error?.message || 'An unexpected error occurred'}</p>
-            <button onClick={() => window.location.reload()} className="btn-primary">
-              Reload Page
+        <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(145deg,#071019,#091821_58%,#061018)] p-6">
+          <div className="max-w-lg rounded-[2rem] border border-rose-400/20 bg-[#101923] p-8 text-center shadow-[0_24px_80px_rgba(2,8,12,0.42)]">
+            <h1 className="text-3xl font-black text-white">The workspace hit an unexpected error</h1>
+            <p className="mt-3 text-sm leading-6 text-slate-300">
+              {this.state.error?.message || 'A rendering failure occurred.'}
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-6 rounded-2xl bg-[#1fe0b1] px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-[#52e8c1]"
+            >
+              Reload Application
             </button>
           </div>
         </div>
@@ -69,49 +73,51 @@ class ErrorBoundary extends React.Component {
 
 function Navigation() {
   const location = useLocation();
-
   const navItems = [
     { path: '/', icon: Home, label: 'Home' },
     { path: '/detection', icon: Camera, label: 'Live Detection' },
-    { path: '/gesture-control', icon: Hand, label: 'Gesture Control' },
+    { path: '/learning', icon: Brain, label: 'Learning Mode' },
     { path: '/bidirectional', icon: MessageSquare, label: 'Communication' },
-    { path: '/analytics', icon: BarChart3, label: 'Analytics' },
+    { path: '/gesture-control', icon: Hand, label: 'Gesture Control' },
+    { path: '/music', icon: Music2, label: 'Virtual Music' },
+    { path: '/analytics', icon: Activity, label: 'Analytics' },
     { path: '/history', icon: History, label: 'History' }
   ];
 
   return (
-    <nav className="border-b border-[#00ff88]/15 bg-slate-950/85 p-4 text-white shadow-lg backdrop-blur-xl" role="navigation" aria-label="Main navigation">
-      <div className="container mx-auto flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <div className="text-3xl" role="img" aria-label="ASL emoji">🤟</div>
-          <h1 className="bg-gradient-to-r from-white via-[#b8ffda] to-[#00ff88] bg-clip-text text-2xl font-bold text-transparent">
-            AlphaHand
-          </h1>
+    <nav className="sticky top-0 z-40 border-b border-white/10 bg-[#07131c]/85 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center justify-between gap-4">
+          <Link to="/" className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[#1fe0b1]/25 bg-[#1fe0b1]/10">
+              <Hand size={20} className="text-[#b9fff1]" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.28em] text-slate-500">ASL Smart Communication Platform</p>
+              <h1 className="text-xl font-black tracking-tight text-white">AlphaHand</h1>
+            </div>
+          </Link>
+          <ThemeToggle />
         </div>
 
-        <div className="flex items-center space-x-4">
-          <div className="flex space-x-1">
-            {navItems.map(({ path, icon: Icon, label }) => (
+        <div className="flex flex-wrap gap-2">
+          {navItems.map(({ path, icon: Icon, label }) => {
+            const active = location.pathname === path;
+            return (
               <Link
                 key={path}
                 to={path}
-                className={`flex items-center space-x-2 rounded-lg px-4 py-2 transition-all duration-300 focus-visible ${
-                  location.pathname === path
-                    ? 'bg-[#00ff88] text-slate-950 shadow-lg'
-                    : 'hover:bg-white hover:bg-opacity-10'
+                className={`inline-flex items-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition ${
+                  active
+                    ? 'bg-[#1fe0b1] text-slate-950 shadow-[0_12px_30px_rgba(31,224,177,0.28)]'
+                    : 'border border-white/10 bg-white/5 text-slate-200 hover:border-white/20 hover:bg-white/10'
                 }`}
-                aria-current={location.pathname === path ? 'page' : undefined}
-                aria-label={label}
               >
-                <Icon size={20} aria-hidden="true" />
-                <span className="hidden md:inline">{label}</span>
+                <Icon size={16} />
+                {label}
               </Link>
-            ))}
-          </div>
-
-          <div className="ml-2">
-            <ThemeToggle />
-          </div>
+            );
+          })}
         </div>
       </div>
     </nav>
@@ -125,13 +131,15 @@ function App() {
         <Router>
           <div className="min-h-screen">
             <Navigation />
-            <main className="container mx-auto p-6" role="main">
+            <main className="mx-auto max-w-7xl px-4 py-6" role="main">
               <Suspense fallback={<LoadingFallback />}>
                 <Routes>
                   <Route path="/" element={<HomePage />} />
                   <Route path="/detection" element={<LiveDetection />} />
-                  <Route path="/gesture-control" element={<GestureControl />} />
+                  <Route path="/learning" element={<LearningMode />} />
                   <Route path="/bidirectional" element={<BidirectionalPage />} />
+                  <Route path="/gesture-control" element={<GestureControl />} />
+                  <Route path="/music" element={<VirtualPianoPage />} />
                   <Route path="/analytics" element={<AnalyticsPage />} />
                   <Route path="/history" element={<HistoryPage />} />
                 </Routes>

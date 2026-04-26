@@ -4,7 +4,7 @@ import { Hands } from '@mediapipe/hands';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
 import { Volume2, VolumeX, Play, Pause, Sun, Camera } from 'lucide-react';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:7860';
 const YOUTUBE_PLAYLIST = [
   { id: 'bDN7vV50rSs', title: 'Video 1', artist: 'Your Playlist' },
   { id: 'yAV5aZ0unag', title: 'Video 2', artist: 'Your Playlist' },
