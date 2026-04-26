@@ -19,6 +19,57 @@ const HAND_CONNECTIONS = [
 
 const FINGER_COLORS = ['#ff7a59', '#00ff88', '#45c4ff', '#f9d65c', '#d17bff'];
 
+function isMobileBrowser() {
+  if (typeof navigator === 'undefined') {
+    return false;
+  }
+
+  const agent = navigator.userAgent || navigator.vendor || window.opera || '';
+  return /android|iphone|ipad|ipod|mobile/i.test(agent);
+}
+
+function getVideoConstraints() {
+  if (isMobileBrowser()) {
+    return {
+      facingMode: 'user',
+      width: { ideal: 640, max: 960 },
+      height: { ideal: 480, max: 720 }
+    };
+  }
+
+  return {
+    facingMode: 'user',
+    width: { ideal: 1280 },
+    height: { ideal: 720 }
+  };
+}
+
+function getFrameIntervalMs() {
+  return isMobileBrowser() ? Math.max(FRAME_INTERVAL_MS, 1000 / 12) : FRAME_INTERVAL_MS;
+}
+
+function getPredictionThrottleMs() {
+  return isMobileBrowser() ? Math.max(PREDICTION_THROTTLE_MS, 320) : PREDICTION_THROTTLE_MS;
+}
+
+function getHandsOptions() {
+  if (isMobileBrowser()) {
+    return {
+      maxNumHands: 1,
+      modelComplexity: 0,
+      minDetectionConfidence: MIN_CLIENT_CONFIDENCE,
+      minTrackingConfidence: MIN_CLIENT_CONFIDENCE
+    };
+  }
+
+  return {
+    maxNumHands: 2,
+    modelComplexity: 1,
+    minDetectionConfidence: MIN_CLIENT_CONFIDENCE,
+    minTrackingConfidence: MIN_CLIENT_CONFIDENCE
+  };
+}
+
 function drawOverlay(canvas, landmarks, showLandmarks) {
   if (!canvas) {
     return;
@@ -479,7 +530,7 @@ export function useLiveDetectionEngine({
     }
 
     const requestNow = Date.now();
-    if (requestInFlightRef.current || requestNow - lastPredictionAtRef.current < PREDICTION_THROTTLE_MS) {
+    if (requestInFlightRef.current || requestNow - lastPredictionAtRef.current < getPredictionThrottleMs()) {
       return;
     }
 
@@ -530,11 +581,7 @@ export function useLiveDetectionEngine({
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: {
-          facingMode: 'user',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
+        video: getVideoConstraints()
       });
 
       streamRef.current = stream;
@@ -550,12 +597,7 @@ export function useLiveDetectionEngine({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
       });
 
-      hands.setOptions({
-        maxNumHands: 2,
-        modelComplexity: 1,
-        minDetectionConfidence: MIN_CLIENT_CONFIDENCE,
-        minTrackingConfidence: MIN_CLIENT_CONFIDENCE
-      });
+      hands.setOptions(getHandsOptions());
       hands.onResults(handleResults);
       handsRef.current = hands;
 
@@ -567,7 +609,7 @@ export function useLiveDetectionEngine({
         const now = performance.now();
         if (
           videoRef.current.readyState >= 2 &&
-          now - lastFrameAtRef.current >= FRAME_INTERVAL_MS
+          now - lastFrameAtRef.current >= getFrameIntervalMs()
         ) {
           lastFrameAtRef.current = now;
           try {

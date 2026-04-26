@@ -44,7 +44,7 @@ function AnalyticsPage() {
   if (loading) {
     return (
       <div className="flex min-h-[400px] items-center justify-center">
-        <div className="text-2xl text-white">Loading Firebase analytics...</div>
+        <div className="text-2xl text-white">Loading performance insights.</div>
       </div>
     );
   }
@@ -53,8 +53,8 @@ function AnalyticsPage() {
     return (
       <div className="card py-12 text-center">
         <Activity size={64} className="mx-auto mb-4 text-gray-400" />
-        <h2 className="mb-2 text-2xl font-bold text-gray-700">No Data Yet</h2>
-        <p className="text-gray-500">Start using the app to populate Firebase analytics.</p>
+        <h2 className="mb-2 text-2xl font-bold text-gray-700">No analytics available yet</h2>
+        <p className="text-gray-500">Usage metrics appear after saved ASL or voice activity.</p>
       </div>
     );
   }
@@ -100,7 +100,7 @@ function AnalyticsPage() {
     <div className="space-y-6">
       <div className="card">
         <h2 className="mb-2 text-3xl font-bold text-gray-800">Analytics Dashboard</h2>
-        <p className="mb-6 text-gray-600">Firebase-backed communication and practice insights</p>
+        <p className="mb-6 text-gray-600">Communication volume, practice performance, and alphabet usage.</p>
 
         <div className="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
           {stats.map((stat) => (

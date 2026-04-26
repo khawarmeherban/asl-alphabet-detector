@@ -71,6 +71,9 @@ export default function LiveDetection() {
   const overlayRef = useRef(null);
   const letterHoldRef = useRef({ letter: '', since: 0, confirmedAt: 0 });
   const suggestionRequestIdRef = useRef(0);
+  const isMobileRef = useRef(
+    typeof navigator !== 'undefined' && /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent || '')
+  );
 
   const [isDetecting, setIsDetecting] = useState(false);
   const [showLandmarks, setShowLandmarks] = useState(true);
@@ -83,7 +86,7 @@ export default function LiveDetection() {
   const [holdProgress, setHoldProgress] = useState(0);
   const [urduTranslation, setUrduTranslation] = useState('');
   const [isUrduLoading, setIsUrduLoading] = useState(false);
-  const [backendHealth, setBackendHealth] = useState({ status: 'checking', message: 'Checking backend...' });
+  const [backendHealth, setBackendHealth] = useState({ status: 'checking', message: 'Verifying prediction service.' });
   const [saveStatus, setSaveStatus] = useState('');
 
   const {
@@ -106,7 +109,7 @@ export default function LiveDetection() {
   const detectedLetter = predictionState.stablePrediction || predictionState.rawPrediction || '...';
 
   const checkBackendHealth = useCallback(async () => {
-    setBackendHealth({ status: 'checking', message: 'Checking backend...' });
+    setBackendHealth({ status: 'checking', message: 'Verifying prediction service.' });
     try {
       const response = await fetch(`${API_URL}/health`);
       const payload = await response.json().catch(() => ({}));
@@ -117,15 +120,15 @@ export default function LiveDetection() {
         message: predictorReady
           ? (
               payload?.fallback_enabled
-                ? 'Backend connected in demo fallback mode. Add asl_model.pkl for full A-Z ML accuracy.'
-                : 'Backend connected and model is ready for ASL inference.'
+                ? 'Prediction service is online in fallback mode. Upload the trained model for full alphabet accuracy.'
+                : 'Prediction service is online and ready for live inference.'
             )
-          : (payload?.setup_hint || 'Backend is online, but the ASL model is not loaded.')
+          : (payload?.setup_hint || 'Prediction service is reachable, but the trained model is not loaded.')
       });
     } catch (error) {
       setBackendHealth({
         status: 'offline',
-        message: error.message || 'Backend unreachable'
+        message: error.message || 'Prediction service is unreachable.'
       });
     }
   }, []);
@@ -293,6 +296,11 @@ export default function LiveDetection() {
             <p className="mt-3 max-w-xl text-sm leading-6 text-slate-300">
               A focused live signing workspace with temporal confirmation, intelligent word correction, and presentation-ready communication output.
             </p>
+            {isMobileRef.current ? (
+              <p className="mt-3 max-w-xl text-sm leading-6 text-slate-400">
+                Mobile mode uses lighter camera and tracking settings to keep detection stable on phones.
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-wrap gap-3">
@@ -349,7 +357,7 @@ export default function LiveDetection() {
                 <div>
                   <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Hold To Confirm</p>
                   <p className="mt-1 text-sm text-slate-300">
-                    Hold a stable letter for {Math.round(HOLD_CONFIRM_MS / 100) / 10}s to append it.
+                    Hold a stable letter for {Math.round(HOLD_CONFIRM_MS / 100) / 10}s to add it to the active word.
                   </p>
                 </div>
                 <div className="rounded-full border border-white/10 px-3 py-1 text-xs text-slate-300">
@@ -368,7 +376,7 @@ export default function LiveDetection() {
               <div className="rounded-[1.5rem] border border-white/10 bg-[#091821] p-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Top Predictions</p>
                 <div className="mt-3 space-y-3">
-                  {(predictionState.topPredictions?.length ? predictionState.topPredictions : [{ label: 'Waiting', confidence: 0 }]).map((item) => (
+                  {(predictionState.topPredictions?.length ? predictionState.topPredictions : [{ label: 'No signal yet', confidence: 0 }]).map((item) => (
                     <div key={item.label} className="rounded-2xl border border-white/8 bg-white/[0.03] p-3">
                       <div className="flex items-center justify-between">
                         <span className="text-lg font-semibold text-white">{item.label}</span>
@@ -422,13 +430,13 @@ export default function LiveDetection() {
             <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Word Builder</p>
             <div className="mt-3 rounded-[1.5rem] border border-[#1fe0b1]/20 bg-[#0a1b21] p-4">
               <p className="text-xs text-slate-500">Current Word</p>
-              <p className="mt-2 min-h-[3rem] break-words text-4xl font-black text-white">{displayedWord || '_'}</p>
+              <p className="mt-2 min-h-[3rem] break-words text-4xl font-black text-white">{displayedWord || 'Ready'}</p>
             </div>
 
             <div className="mt-4 rounded-[1.5rem] border border-white/10 bg-[#091821] p-4">
               <p className="text-xs text-slate-500">Sentence Canvas</p>
               <p className="mt-2 min-h-[4rem] text-sm leading-7 text-slate-100">
-                {currentSentence || 'Committed words build here for speech and translation.'}
+                {currentSentence || 'Committed words appear here for speech, correction, and translation.'}
               </p>
               {saveStatus ? <p className="mt-2 text-xs text-[#9aeed9]">{saveStatus}</p> : null}
             </div>
@@ -463,7 +471,7 @@ export default function LiveDetection() {
                 <Sparkles size={15} className="text-[#1fe0b1]" />
                 Word Suggestions
                 {(isCorrectionLoading || isSuggestionLoading) ? (
-                  <span className="text-xs font-normal text-slate-400">Refreshing...</span>
+                  <span className="text-xs font-normal text-slate-400">Updating suggestions</span>
                 ) : null}
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
@@ -499,7 +507,7 @@ export default function LiveDetection() {
             </button>
             <div className="mt-4 rounded-[1.5rem] border border-white/10 bg-[#091821] p-4">
               <p className="text-sm leading-7 text-slate-200">
-                {urduTranslation || 'Roman Urdu output appears here once a sentence is ready.'}
+                {urduTranslation || 'Roman Urdu translation is shown here once a sentence is ready.'}
               </p>
             </div>
           </div>

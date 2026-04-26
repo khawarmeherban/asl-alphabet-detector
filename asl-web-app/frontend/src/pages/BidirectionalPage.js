@@ -4,6 +4,12 @@ import useLiveDetectionEngine from '../features/liveDetection/useLiveDetectionEn
 import useSpeechSynthesis from '../features/liveDetection/useSpeechSynthesis';
 import { saveConversationEntry } from '../services/firebaseSync';
 
+const SPEECH_LANGUAGE_OPTIONS = [
+  { value: 'ur-PK', label: 'Urdu (Pakistan)' },
+  { value: 'ur-IN', label: 'Urdu (India)' },
+  { value: 'en-US', label: 'English (US)' }
+];
+
 function normalizeText(text) {
   return String(text || '').replace(/\s+/g, ' ').trim();
 }
@@ -18,14 +24,15 @@ function Panel({ title, eyebrow, children }) {
   );
 }
 
-function createRecognition(onText, onStop) {
+function createRecognition(onText, handlers, language) {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) return null;
 
   const recognition = new SpeechRecognition();
   recognition.continuous = true;
   recognition.interimResults = true;
-  recognition.lang = 'en-US';
+  recognition.lang = language || 'ur-PK';
+  recognition.maxAlternatives = 1;
 
   recognition.onresult = (event) => {
     let finalTranscript = '';
@@ -41,8 +48,8 @@ function createRecognition(onText, onStop) {
     }
   };
 
-  recognition.onerror = () => onStop();
-  recognition.onend = () => onStop();
+  recognition.onerror = (event) => handlers.onError?.(event);
+  recognition.onend = () => handlers.onEnd?.();
   return recognition;
 }
 
@@ -51,6 +58,8 @@ export default function BidirectionalPage() {
   const overlayRef = useRef(null);
   const recognitionRef = useRef(null);
   const lastAcceptedAtRef = useRef({ label: '', at: 0 });
+  const shouldKeepListeningRef = useRef(false);
+  const restartTimeoutRef = useRef(null);
 
   const [isDetectionActive, setIsDetectionActive] = useState(false);
   const [showLandmarks, setShowLandmarks] = useState(true);
@@ -58,6 +67,7 @@ export default function BidirectionalPage() {
   const [voiceText, setVoiceText] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
+  const [speechLanguage, setSpeechLanguage] = useState('ur-PK');
 
   const {
     predictionState,
@@ -77,9 +87,58 @@ export default function BidirectionalPage() {
   const confidence = Math.round((predictionState.confidence || 0) * 100);
 
   useEffect(() => {
-    recognitionRef.current = createRecognition(setVoiceText, () => setIsListening(false));
-    return () => recognitionRef.current?.stop();
-  }, []);
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+
+    recognitionRef.current = createRecognition(
+      setVoiceText,
+      {
+        onError: (event) => {
+          const code = event?.error || '';
+          if (code === 'not-allowed' || code === 'service-not-allowed' || code === 'audio-capture') {
+            shouldKeepListeningRef.current = false;
+            setIsListening(false);
+            return;
+          }
+
+          if (!shouldKeepListeningRef.current) {
+            setIsListening(false);
+          }
+        },
+        onEnd: () => {
+          if (!shouldKeepListeningRef.current || !recognitionRef.current) {
+            setIsListening(false);
+            return;
+          }
+
+          if (restartTimeoutRef.current) {
+            window.clearTimeout(restartTimeoutRef.current);
+          }
+
+          restartTimeoutRef.current = window.setTimeout(() => {
+            if (!shouldKeepListeningRef.current || !recognitionRef.current) {
+              setIsListening(false);
+              return;
+            }
+
+            recognitionRef.current.start();
+            setIsListening(true);
+          }, 180);
+        }
+      },
+      speechLanguage
+    );
+
+    return () => {
+      shouldKeepListeningRef.current = false;
+      if (restartTimeoutRef.current) {
+        window.clearTimeout(restartTimeoutRef.current);
+        restartTimeoutRef.current = null;
+      }
+      recognitionRef.current?.stop();
+    };
+  }, [speechLanguage]);
 
   useEffect(() => {
     if (!stableLetter) return;
@@ -99,11 +158,13 @@ export default function BidirectionalPage() {
   const toggleListening = useCallback(() => {
     if (!recognitionRef.current) return;
     if (isListening) {
+      shouldKeepListeningRef.current = false;
       recognitionRef.current.stop();
       setIsListening(false);
       return;
     }
 
+    shouldKeepListeningRef.current = true;
     recognitionRef.current.start();
     setIsListening(true);
   }, [isListening]);
@@ -136,7 +197,8 @@ export default function BidirectionalPage() {
         text: normalizeText(voiceText),
         sentenceSnapshot: normalizeText(voiceText),
         mode: 'Voice',
-        speaker: 'Speaker'
+        speaker: 'Speaker',
+        language: speechLanguage
       }
     ].filter(Boolean);
 
@@ -155,7 +217,7 @@ export default function BidirectionalPage() {
     );
 
     setSaveStatus(results.every(Boolean) ? 'Conversation synced to history.' : 'Some history entries could not be synced.');
-  }, [aslText, voiceText]);
+  }, [aslText, speechLanguage, voiceText]);
 
   return (
     <div className="space-y-6 text-slate-100">
@@ -276,8 +338,35 @@ export default function BidirectionalPage() {
                   {isListening ? <Mic size={32} /> : <MicOff size={32} />}
                 </div>
                 <p className="mt-4 text-lg font-semibold text-white">{isListening ? 'Capturing live speech' : 'Ready for speech transcription'}</p>
-                <p className="mt-2 text-sm text-slate-400">Use browser speech recognition for a clean, low-latency demo flow.</p>
+                <p className="mt-2 text-sm text-slate-400">Recognition language is matched to the selected speech input profile.</p>
               </div>
+            </div>
+
+            <div className="mt-4">
+              <label className="text-xs uppercase tracking-[0.24em] text-slate-500" htmlFor="speech-language">
+                Speech Language
+              </label>
+              <select
+                id="speech-language"
+                value={speechLanguage}
+                onChange={(event) => {
+                  const nextLanguage = event.target.value;
+                  const wasListening = isListening;
+                  if (wasListening && recognitionRef.current) {
+                    shouldKeepListeningRef.current = false;
+                    recognitionRef.current.stop();
+                    setIsListening(false);
+                  }
+                  setSpeechLanguage(nextLanguage);
+                }}
+                className="mt-2 w-full rounded-2xl border border-white/10 bg-[#061018] px-4 py-3 text-sm font-medium text-white outline-none transition focus:border-[#1fe0b1]/40"
+              >
+                {SPEECH_LANGUAGE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
@@ -301,6 +390,9 @@ export default function BidirectionalPage() {
             <div className="mt-4 rounded-[1.5rem] border border-white/10 bg-[#061018] p-4">
               <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Voice Transcript</p>
               <p className="mt-2 min-h-[4rem] text-lg leading-8 text-white">{voiceText || 'Spoken words appear here once recognition starts.'}</p>
+              <p className="mt-3 text-xs text-slate-500">
+                Active recognition profile: {SPEECH_LANGUAGE_OPTIONS.find((option) => option.value === speechLanguage)?.label || speechLanguage}
+              </p>
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">

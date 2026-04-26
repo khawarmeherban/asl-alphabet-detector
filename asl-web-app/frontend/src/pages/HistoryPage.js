@@ -63,7 +63,7 @@ function HistoryPage() {
   if (loading) {
     return (
       <div className="flex min-h-[400px] items-center justify-center">
-        <div className="text-2xl text-white">Loading Firebase history...</div>
+        <div className="text-2xl text-white">Loading conversation history.</div>
       </div>
     );
   }
@@ -75,7 +75,7 @@ function HistoryPage() {
           <div>
             <h2 className="text-3xl font-bold text-gray-800">Conversation History</h2>
             <p className="mt-1 text-gray-600">
-              {history.length} {history.length === 1 ? 'message' : 'messages'} synced
+              {history.length} {history.length === 1 ? 'entry' : 'entries'} available
             </p>
           </div>
           {history.length > 0 && (
@@ -121,9 +121,9 @@ function HistoryPage() {
         {filteredHistory.length === 0 ? (
           <div className="py-12 text-center">
             <div className="mb-4 text-6xl">💬</div>
-            <h3 className="mb-2 text-2xl font-bold text-gray-700">No Messages Yet</h3>
+            <h3 className="mb-2 text-2xl font-bold text-gray-700">No conversation records yet</h3>
             <p className="text-gray-500">
-              {filter === 'all' ? 'Start communicating to see synced history here.' : `No ${filter} messages found.`}
+              {filter === 'all' ? 'Saved ASL and voice sessions will appear here.' : `No ${filter} records are available yet.`}
             </p>
           </div>
         ) : (
