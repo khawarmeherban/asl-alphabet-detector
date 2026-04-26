@@ -48,7 +48,7 @@ The product goal is simple: help Deaf, hard-of-hearing, and hearing users bridge
 - Scikit-learn
 - MediaPipe/OpenCV utilities
 - Google Gemini API
-- Gunicorn/Eventlet for deployment
+- Gunicorn threaded worker for deployment
 
 ### ML Pipeline
 
@@ -200,9 +200,10 @@ The generated file should be copied or referenced so the backend can load it bef
 ### Backend: Hugging Face Spaces
 
 - Use `asl-web-app/backend` files.
-- Ensure `asl_model.pkl` is present or `ASL_MODEL_PATH` points to it.
+- Ensure `asl_model.pkl` is present or `ASL_MODEL_PATH` points to it if you want full ML prediction accuracy.
 - Set `GEMINI_API_KEY` only in secure Space secrets if AI assistance is needed.
 - The backend listens on port `7860`.
+- Production deploys use plain Gunicorn threads because the frontend prediction flow uses HTTP endpoints and this is more stable on Spaces than eventlet workers.
 
 ## Accessibility Impact
 

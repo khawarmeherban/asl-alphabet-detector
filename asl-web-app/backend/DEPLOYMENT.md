@@ -9,7 +9,8 @@
      ```
      bash copy_model.sh
      ```
-2. Make sure your `.gitignore` does NOT exclude `.pkl` files so the model is pushed.
+2. Make sure your deployment includes `asl_model.pkl` if you want full ML prediction accuracy.
+   The backend can start without it, but live `/predict` will only use the heuristic fallback.
 3. Add, commit, and push all files to your Hugging Face Space:
    ```
    git add .
@@ -20,7 +21,7 @@
 
 ---
 
-- The backend now uses gunicorn+eventlet for production and WebSocket support.
+- The backend uses plain gunicorn threads for Hugging Face stability.
 - The root endpoint `/` returns a health check for Hugging Face readiness.
 - The model file is included for deployment.
 - The Procfile and Dockerfile are set for port 7860.
